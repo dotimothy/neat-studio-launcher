@@ -1,0 +1,47 @@
+# Used by the tests and for a local smoke run without a board:
+#   NEAT_LAUNCHER_CONFIG=tests/python/fixtures/fake_studios.yaml NEAT_STUDIOS_ROOT=/tmp/fake-studios ./run.sh
+only: [genai, decision, change, dino]
+studios:
+  - id: dino
+    marker: fake.py
+    installed_marker: ""
+    port: 18092
+    scheme: http
+    health: /
+    setup: echo "▸ fake setup" && sleep 1 && echo "✔ done"
+    launch: exec python3 fake.py 18092
+    stop: ""
+    alongside_env: {}
+    processes: ["{dir}/fake.py"]
+    logs: []
+  - id: change
+    marker: fake.py
+    installed_marker: ""
+    port: 18098
+    scheme: http
+    health: /
+    setup: echo "▸ fake setup" && sleep 1 && echo "✔ done"
+    launch: exec python3 fake.py 18098
+    processes: ["{dir}/fake.py"]
+    logs: []
+  - id: decision
+    marker: fake.py
+    installed_marker: ""
+    port: 18095
+    scheme: http
+    health: /
+    setup: echo "▸ fake setup"
+    launch: exec python3 fake.py 18095 --stubborn
+    processes: ["{dir}/fake.py"]
+    logs: []
+  - id: genai
+    marker: fake.py
+    installed_marker: ""
+    port: 18000
+    scheme: http
+    health: /
+    setup: echo "▸ fake setup"
+    launch: exec python3 fake.py 18000
+    stop: ""
+    processes: ["{dir}/fake.py"]
+    logs: []

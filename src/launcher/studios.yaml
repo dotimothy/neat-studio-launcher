@@ -1,0 +1,166 @@
+# Studios the launcher knows about.
+#
+# Placeholders in commands and patterns: {dir} (install directory), {repo},
+# {branch}, {port}. Commands run with bash from {dir}, stdin closed, so any
+# setup prompt falls back to its non-interactive default.
+#
+# A local override file (config.local.yaml next to run.sh, or the path in
+# NEAT_LAUNCHER_CONFIG) can change install_root or any studio field by id.
+
+install_root: /media/nvme
+
+studios:
+  - id: genai
+    name: Neat GenAI Studio
+    short: GenAI
+    category: GenAI · LLM · VLM · Speech
+    repo: dotimothy/neat-genai-studio
+    branch: main
+    dirs: [neat-genai-studio]
+    marker: run.sh
+    installed_marker: .venv/bin/python
+    port: 5000
+    scheme: https
+    health: /health
+    setup: CREATE_ALIAS=0 CREATE_DESKTOP_ICON=0 ./setup.sh
+    launch: ./run.sh
+    stop: ./run.sh stop
+    update: ./run.sh update
+    processes: ["{dir}/src/python/ui/main.py", "{dir}/src/python/server/main.py"]
+    logs: []
+    tagline: Chat, See, Listen and Speak. All On-Device.
+    pitch: >-
+      Download and hot-swap LLMs and VLMs, chat with text, images or a camera,
+      talk with Whisper and on-device TTS, ground answers with RAG, and serve it
+      all through an OpenAI-compatible API. Nothing leaves the board.
+    metric: { value: "100%", label: "Local: No Cloud Calls" }
+    bullets:
+      - Hot-Swap LLM / VLM Models Without Restarting
+      - Whisper ASR, TTS and RAG
+      - OpenAI-Compatible API on :9998
+    media: { type: gif, hero: chat.gif }
+    gallery:
+      - { file: chat.gif, poster: chat.webp, group: Features, title: "Streaming Chat", caption: "Chatting with Gemma 4 E2B as the Reply Streams in as Markdown with Live Latency and Tokens-per-Second Readouts." }
+      - { file: vision.gif, poster: vision.webp, group: Features, title: "Ask About an Image", caption: "Uploading a Photo of Earth and Asking the Vision-Language Model What It Shows." }
+      - { file: load-model.gif, poster: load-model.webp, group: Features, title: "Load a Model", caption: "Loading a Model from Settings Without Restarting, with a Live Progress Bar." }
+    icon: studios/genai/icon.svg
+    icon_small: studios/genai/icon-small.svg
+    docs: https://github.com/dotimothy/neat-genai-studio
+
+  - id: decision
+    name: Neat Decision Studio
+    short: Decision
+    category: Language · System-1 Decisions
+    repo: dotimothy/neat-decision-studio
+    branch: main
+    dirs: [neat-decision-studio, laya]
+    marker: webapp/server.py
+    port: 8095
+    scheme: https
+    health: /api/info
+    setup: LAYA_MODELS=general ./setup.sh --no-desktop-icon
+    launch: ./run.sh
+    update: ./run.sh update
+    processes: ["{dir}/webapp/server.py"]
+    logs: [webapp.log]
+    tagline: Instant Yes/No Reasoning. One Decision Every ~19 ms.
+    pitch: >-
+      Laya non-autoregressive decision models answer in a single pass instead
+      of token by token. Watch live debates, ask your own questions, compare
+      four models or play eight games against the MLA.
+    metric: { value: "~19 ms", label: "Per Decision" }
+    bullets:
+      - Non-Autoregressive System-1 Models
+      - Live Debate, Your Own Questions, 4-Model Compare
+      - Vision Mode and 8 Games
+    media: { type: gif, hero: debate.gif }
+    gallery:
+      - { file: debate.gif, poster: debate.webp, group: Features, title: "Debate", caption: "A Yes-or-No Question Answered as It Is Typed, in About 19 ms per Decision." }
+      - { file: questions.gif, poster: questions.webp, group: Features, title: "Questions", caption: "Stepping Through Three Examples, Each Answered as It Is Chosen." }
+      - { file: compare.gif, poster: compare.webp, group: Features, title: "Compare", caption: "One Question After Another, Each Answered by Four Models Side by Side." }
+      - { file: vision.gif, poster: vision.webp, group: Features, title: "Vision", caption: "Example Sets Answered and Scored by d1 Omni and d1 3B, Then a Video Decided Frame by Frame." }
+      - { file: snake.gif, poster: snake.webp, group: Games, title: "Snake", caption: "Two Models Racing on the Same Course." }
+      - { file: chess.gif, poster: chess.webp, group: Games, title: "Chess", caption: "Laya-Chess Against the General Laya." }
+      - { file: tictactoe.gif, poster: tictactoe.webp, group: Games, title: "Tic-Tac-Toe", caption: "Laya Against CLM." }
+      - { file: rps.gif, poster: rps.webp, group: Games, title: "Rock Paper Scissors", caption: "Laya Against Laya Typed-Decisions." }
+      - { file: dino.gif, poster: dino.webp, group: Games, title: "Dino Arena", caption: "The Game's Own Model Against the General Laya." }
+      - { file: blackjack.gif, poster: blackjack.webp, group: Games, title: "Blackjack", caption: "Two Models at the Table." }
+      - { file: sudoku.gif, poster: sudoku.webp, group: Games, title: "Sudoku", caption: "Two Models Filling a Puzzle in Turns." }
+      - { file: settings.gif, poster: settings.webp, group: Features, title: "Settings", caption: "A Model Being Loaded Beside Six Others, and the Memory Bar." }
+    icon: studios/decision/icon.svg
+    docs: https://github.com/dotimothy/neat-decision-studio
+
+  - id: change
+    name: Neat Change Studio
+    short: Change
+    category: Vision · Change Detection
+    repo: dotimothy/neat-change-studio
+    branch: main
+    dirs: [neat-change-studio]
+    marker: webapp/server.py
+    port: 8098
+    scheme: https
+    health: /api/status
+    setup: CYWS_MODELS=bf16 ./setup.sh --no-prompt --no-desktop-icon
+    launch: webapp/run.sh
+    alongside_env: { FORCE: "1" }
+    update: curl -fsSL https://raw.githubusercontent.com/{repo}/{branch}/install.sh | STUDIO_UPDATE=1 STUDIO_DIR={dir} bash
+    processes: ["{dir}/webapp/server.py"]
+    logs: [webapp/server.log]
+    tagline: See What Changed. Before/After Detection in Milliseconds.
+    pitch: >-
+      Compare two images of the same scene and box every change: inspections,
+      retail shelves, security. CYWS, DINOv2 zero-shot or C-3PO, accelerated on
+      the Modalix MLA, from your phone or a webcam.
+    metric: { value: "3", label: "Change Models, One Click Apart" }
+    bullets:
+      - CYWS, DINOv2 (Zero-Shot) and C-3PO
+      - Live Webcam Ghost Overlay and Phone Capture
+      - Live Threshold Tuning
+    media: { type: gif, hero: detect.gif }
+    gallery:
+      - { file: detect.gif, poster: detect.webp, group: Features, title: "Detect a Pair", caption: "Boxes Draw In on a Test Pair, a Detection Is Highlighted, Then Before and After Are Compared with the Swipe Slider." }
+      - { file: compare.gif, poster: compare.webp, group: Features, title: "Compare Layers", caption: "Heat Map, Ground-Truth Outline, Change Mask and Tiles Toggle On and Off, Then Side by Side and Swipe Views." }
+      - { file: tuning.gif, poster: tuning.webp, group: Features, title: "Presets and Threshold", caption: "Switching Presets and Dragging the Threshold Re-Runs on the MLA and Updates the Boxes." }
+      - { file: runall.gif, poster: runall.webp, group: Features, title: "Run All Pairs", caption: "All 28 Test Pairs Run on the MLA, Finding 33 of 47 Changes with 2 False Alarms." }
+      - { file: webcam.gif, poster: webcam.webp, group: Features, title: "Live Webcam", caption: "A Countdown Captures Before and After from the Webcam, Then Watch Live Keeps Detecting." }
+      - { file: models.gif, poster: models.webp, group: Features, title: "Model Switch", caption: "Switching from bf16 to w8a16 Releases the MLA, Loads the Model and Warms Up." }
+      - { file: phone.gif, poster: phone.webp, group: Features, title: "On a Phone", caption: "A Test Pair Is Tapped and Detected on a Phone, Then the Results and Test Set Tabs." }
+    icon: studios/change/icon.svg
+    docs: https://github.com/dotimothy/neat-change-studio
+
+  - id: dino
+    name: Neat DINO Studio
+    short: DINO
+    category: Vision · Zero-Shot Detection
+    repo: dotimothy/neat-dino-studio
+    branch: main
+    dirs: [neat-dino-studio]
+    marker: webapp/server.py
+    port: 8092
+    scheme: https
+    health: /api/status
+    setup: ./setup.sh --no-prompt --no-desktop
+    launch: webapp/run.sh
+    alongside_env: { FORCE: "1" }
+    update: curl -fsSL https://raw.githubusercontent.com/{repo}/{branch}/install.sh | STUDIO_UPDATE=1 STUDIO_DIR={dir} bash
+    processes: ["{dir}/webapp/server.py", "{dir}/voice/voice_server.py"]
+    logs: [webapp/server.log]
+    tagline: Type or Say What to Find. Grounding DINO Finds It on the MLA.
+    pitch: >-
+      Zero-shot vision detection: open-vocabulary, with no fixed class list and
+      no retraining. Ask for "the red mug
+      left of the laptop" and Grounding DINO finds it, from a photo or a live
+      webcam, entirely on the Modalix MLA.
+    metric: { value: "0", label: "Retraining for New Objects" }
+    bullets:
+      - Zero-Shot Detection: Any Phrase, No Fixed Class List
+      - Voice Queries via Whisper + On-Device LLM (~0.5 s)
+      - Pipelined Live Mode, ~27% More FPS
+    media: { type: gif, hero: studio-detect.gif }
+    gallery:
+      - { file: studio-detect.gif, poster: studio-detect.webp, group: Features, title: "Prompted Detection", caption: "Click a Sample to See Boxes, Tune the Box Score, and Rerun Only the Text Step When the Prompt Changes." }
+      - { file: studio-voice.gif, poster: studio-voice.webp, group: Features, title: "Voice Prompt", caption: "Speak a Request and Whisper with an LLM Turns It into a Prompt That Runs Detection." }
+      - { file: studio-live.gif, poster: studio-live.webp, group: Features, title: "Live Webcam", caption: "Live Webcam Mode with Boxes on Every Frame and the Frame Rate in the Metric Strip." }
+    icon: studios/dino/icon.svg
+    docs: https://github.com/dotimothy/neat-dino-studio
