@@ -1044,26 +1044,65 @@
 
   // A studio uses its own self-signed certificate: the browser refuses to frame
   // it until the certificate is accepted once in a tab of its own.
+  // A studio uses its own self-signed certificate. Browsers never show their
+  // certificate warning inside a frame, so the warning opens in a small
+  // pop-up; the launcher watches for the certificate to become trusted, closes
+  // the pop-up itself and loads the studio here.
+  async function reachable(url) {
+    try { await fetch(url, { mode: "no-cors", cache: "no-store" }); return true; } catch (e) { return false; }
+  }
+
   async function loadFrame(st) {
     const url = studioUrl(st);
     const frame = $("#studioFrame");
-    let reachable = true;
-    try { await fetch(url, { mode: "no-cors", cache: "no-store" }); } catch (e) { reachable = false; }
+    const ok = await reachable(url);
     if (studioPage.id !== st.id || studioPage.mode !== "frame") return;
-    if (reachable) { frame.src = url; return; }
+    if (ok) { frame.src = url; return; }
     const split = $(".studio-split");
     const ov = document.createElement("div");
     ov.className = "overlay-panel";
-    ov.innerHTML = `<div class="panel">
-      <div style="display:flex;gap:12px;align-items:center"><div class="v-icon" style="width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:var(--accent-weak);color:var(--accent-strong)">${icon("shield")}</div>
+    ov.innerHTML = `<div class="panel trust-panel">
+      <div style="display:flex;gap:12px;align-items:center"><div class="trust-icon">${icon("shield")}</div>
       <h3>One More Step: Trust ${esc(st.short)}</h3></div>
-      <p>${esc(st.name)} is running, but it uses its own self-signed certificate, so your browser won't show it inside the launcher yet. Open it once in a new tab, choose <b>Advanced → Proceed</b>, then come back here.</p>
-      <div class="btn-row"><button class="btn primary" id="trustOpen">${icon("external")}Open ${esc(st.short)} to Trust It</button><button class="btn" id="trustRetry">${icon("refresh")}I've Done That, Retry</button><button class="btn ghost" data-act="popout:${st.id}">Just Use a New Tab</button></div>
+      <p>${esc(st.name)} uses its own self-signed certificate. Your browser asks about it once, and only in a window of its own.</p>
+      <ol class="trust-steps">
+        <li><b>Click Trust ${esc(st.short)}.</b> A small window opens with the browser's warning.</li>
+        <li><b>Choose Advanced → Proceed</b> (Chrome: "Proceed to …"; Firefox: "Accept the Risk and Continue").</li>
+        <li><b>That's it.</b> The window closes by itself and ${esc(st.short)} opens right here.</li>
+      </ol>
+      <div class="trust-status muted" aria-live="polite"></div>
+      <div class="btn-row"><button class="btn primary" id="trustOpen">${icon("shield")}Trust ${esc(st.short)}</button><button class="btn ghost" data-act="popout:${st.id}">${icon("external")}Use a New Tab Instead</button></div>
     </div>`;
-    ov.querySelector("svg").setAttribute("width", 20); ov.querySelector("svg").setAttribute("height", 20);
+    $$("svg", ov).forEach((g) => { g.setAttribute("width", 18); g.setAttribute("height", 18); });
     split.appendChild(ov);
-    $("#trustOpen").onclick = () => window.open(url, "_blank", "noopener");
-    $("#trustRetry").onclick = () => { ov.remove(); loadFrame(st); };
+    const status = ov.querySelector(".trust-status");
+    let timer = null, win = null;
+    const stillHere = () => studioPage.id === st.id && studioPage.mode === "frame" && ov.isConnected;
+    const done = () => { if (timer) clearInterval(timer); timer = null; };
+    const trusted = () => {
+      done();
+      try { if (win && !win.closed) win.close(); } catch (e) { /* already gone */ }
+      status.innerHTML = `${icon("check")} Certificate trusted. Opening ${esc(st.short)}…`;
+      status.classList.remove("muted"); status.classList.add("ok");
+      setTimeout(() => { if (studioPage.id === st.id && studioPage.mode === "frame") { ov.remove(); frame.src = url; } }, 600);
+      toast(`${st.name} Trusted`, "ok");
+    };
+    $("#trustOpen").onclick = () => {
+      const w = 860, h = 660;
+      const left = Math.max(0, (screen.availWidth - w) / 2), top = Math.max(0, (screen.availHeight - h) / 2);
+      win = window.open(url, `neat-trust-${st.id}`, `popup=yes,width=${w},height=${h},left=${left},top=${top}`);
+      if (!win) win = window.open(url, "_blank");          // pop-ups blocked: a tab works the same way
+      if (!win) { status.textContent = "Your browser blocked the window. Allow pop-ups for the launcher, or use a new tab."; return; }
+      status.textContent = "Waiting for you to choose Advanced → Proceed in the small window…";
+      done();
+      const started = Date.now();
+      timer = setInterval(async () => {
+        if (!stillHere()) { done(); return; }
+        if (await reachable(url)) { trusted(); return; }
+        if (win.closed) { done(); status.textContent = "The window closed before the certificate was accepted. Click Trust to try again."; return; }
+        if (Date.now() - started > 10 * 60 * 1000) { done(); status.textContent = "Still waiting? Click Trust to open the window again."; }
+      }, 1000);
+    };
   }
 
   // ------------------------------------------------------------------ manager

@@ -758,3 +758,12 @@ th, td { padding-left: 12px; padding-right: 12px; }
 .branch-chip { display: inline-flex; align-items: center; gap: 4px; font-family: var(--code-font); font-size: 11px; color: var(--accent-strong); }
 :root[data-theme="dark"] .branch-chip { color: var(--accent); }
 .branch-chip svg { width: 11px; height: 11px; }
+
+/* Certificate trust panel */
+.trust-icon { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; flex: none; background: var(--accent-weak); color: var(--accent-strong); }
+:root[data-theme="dark"] .trust-icon { color: var(--accent); }
+.trust-steps { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; color: var(--text-2); }
+.trust-steps b { color: var(--text); }
+.trust-status { min-height: 20px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.trust-status.ok { color: var(--ok); font-weight: 600; }
+.trust-status svg { width: 16px; height: 16px; }
