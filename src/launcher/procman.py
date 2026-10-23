@@ -39,7 +39,7 @@ def valid_branch(name: str) -> str:
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
 Emit = Callable[..., None]
-STOP_GRACE = float(os.environ.get("NEAT_LAUNCHER_STOP_GRACE", "10"))
+STOP_GRACE = float(os.environ.get("NEAT_LAUNCHER_STOP_GRACE", "60"))  # MLA studios must free models; SIGKILL leaks MLA memory
 
 
 def strip_ansi(text: str) -> str:
