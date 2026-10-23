@@ -358,7 +358,7 @@
       mode = choice;
     }
     if (await act(id, "launch", { mode })) {
-      if (!(opts && opts.stay)) location.hash = `#/studio/${id}`;
+      if (!(opts && opts.stay)) location.hash = `#/studio/${id}/open`;
     }
   }
 
@@ -462,7 +462,7 @@
     ({
       install: () => install(id),
       launch: () => launch(id),
-      open: () => { location.hash = `#/studio/${id}`; },
+      open: () => { location.hash = ["running", "starting"].includes(state.studios[id].state) ? `#/studio/${id}/open` : `#/studio/${id}`; },
       stop: () => stop(id, false),
       kill: () => stop(id, true),
       restart: () => act(id, "restart").then((ok) => ok && toast(`Restarting ${state.studios[id].name}`, "info")),
@@ -904,7 +904,10 @@
     studioPage = { id: null, mode: null, log: null, trust: null };
   }
 
+  // The details page is always reachable; the studio itself shows only on
+  // #/studio/<id>/open while it is starting or running.
   function studioMode(st) {
+    if (state.route.view !== "open") return "detail";
     if (st.state === "running") return "frame";
     if (st.state === "starting") return "boot";
     return "detail";
@@ -983,6 +986,7 @@
         tools.dataset.k = k;
         const isUp = ["running", "starting"].includes(st.state);
         tools.innerHTML = [
+          studioPage.mode !== "detail" ? `<a class="btn sm" href="#/studio/${st.id}" title="Details, demos, updates and branch">${icon("book")}<span class="hide-sm">Details</span></a>` : "",
           studioPage.mode === "frame" ? `<button class="btn sm" id="logToggle">${icon("terminal")}<span class="hide-sm">Log</span></button>` : "",
           isUp ? `<button class="btn sm" data-act="popout:${st.id}">${icon("external")}<span class="hide-sm">Pop Out</span></button>` : "",
           isUp ? `<button class="btn sm" data-act="restart:${st.id}">${icon("refresh")}<span class="hide-sm">Restart</span></button>` : "",
@@ -1281,10 +1285,12 @@
   function route() {
     const h = location.hash || "#/";
     if (h === "#studios") { show("home"); setTimeout(() => $("#studios").scrollIntoView({ behavior: "smooth" }), 30); return; }
-    const m = h.match(/^#\/studio\/([\w-]+)(?:\/(\d+))?/);
+    const m = h.match(/^#\/studio\/([\w-]+)(?:\/(open|\d+))?/);
     if (m) {
-      const same = state.route.page === "studio" && state.route.id === m[1];
-      state.route = { page: "studio", id: m[1], g: m[2] ? +m[2] : 0 };
+      const view = m[2] === "open" ? "open" : "details";
+      const same = state.route.page === "studio" && state.route.id === m[1] && state.route.view === view;
+      state.route = { page: "studio", id: m[1], view, g: m[2] && m[2] !== "open" ? +m[2] : 0 };
+      if (m[2] === "open") m[2] = undefined;
       show("studio");
       const box = same && document.querySelector(".gallery");
       const n = state.studios[m[1]] ? galleryOf(state.studios[m[1]]).length : 0;
