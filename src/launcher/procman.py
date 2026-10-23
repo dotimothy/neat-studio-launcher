@@ -28,6 +28,15 @@ import psutil
 from registry import Studio
 import updates
 
+BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
+
+
+def valid_branch(name: str) -> str:
+    if not BRANCH_RE.match(name or "") or ".." in name or name.endswith((".lock", "/")):
+        raise RuntimeError(f"not a valid branch name: {name!r}")
+    return name
+
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
 Emit = Callable[..., None]
 STOP_GRACE = float(os.environ.get("NEAT_LAUNCHER_STOP_GRACE", "10"))
@@ -133,6 +142,8 @@ class Manager:
         self._procs: dict[str, list[psutil.Process]] = {s: [] for s in self.studios}
         self._pcache: dict[int, psutil.Process] = {}
         self._stop = threading.Event()
+        self._branch_cache: dict[str, tuple[float, str]] = {}
+        self._tail_lock = threading.Lock()
 
     # -- paths ---------------------------------------------------------------
     def run_log(self, sid: str) -> Path:
@@ -172,7 +183,7 @@ class Manager:
                     hit = owned_groups[pg]
                 else:
                     for sid, pats in patterns.items():
-                        if any(pat in cmd for pat in pats):
+                        if any((pat.search(cmd) if hasattr(pat, "search") else pat in cmd) for pat in pats):
                             hit = sid
                             break
                 if hit:
@@ -245,6 +256,8 @@ class Manager:
             "id": sid,
             "state": self.state(sid),
             "installed": s.is_installed(),
+            "branch": self.branch_of(sid) if s.find_dir() else s.branch,
+            "default_branch": s.branch,
             "dir": str(s.install_dir()),
             "found_dir": bool(s.find_dir()),
             "owned": rt.owned is not None and rt.owned.poll() is None,
@@ -270,6 +283,10 @@ class Manager:
         return [self.job_log(sid), self.run_log(sid), *self.studios[sid].log_paths()]
 
     def tail_once(self) -> None:
+        with self._tail_lock:                  # the monitor and _fresh_log both tail
+            self._tail_once()
+
+    def _tail_once(self) -> None:
         for sid, rt in self.rt.items():
             for path in self._tail_paths(sid):
                 key = str(path)
@@ -299,6 +316,14 @@ class Manager:
                         rt.job.step = steps[-1].strip(" ▸✔=->")[:120]
                 self.emit("log", {"id": sid, "data": text}, to=f"log:{sid}")
 
+    def _fresh_log(self, sid: str) -> None:
+        """Start the on-screen log afresh (a new run should not show the last
+        run's traceback). The log files on disk keep everything."""
+        rt = self.rt[sid]
+        self.tail_once()                       # take what is already written...
+        rt.log.clear()                         # ...and drop it from the live view
+        self.emit("log_reset", {"id": sid}, to=f"log:{sid}")
+
     # -- jobs ----------------------------------------------------------------
     def _env(self, s: Studio, extra: dict | None = None) -> dict:
         env = dict(os.environ)
@@ -319,6 +344,8 @@ class Manager:
         rt = self.rt[sid]
         job = Job(kind=kind)
         rt.job, rt.error = job, ""
+        if kind == "install":
+            self._fresh_log(sid)
         self._note(sid, f"{kind} {s.name} · {time.strftime('%H:%M:%S')}")
 
         def work():
@@ -352,27 +379,57 @@ class Manager:
         self.push()
         return job
 
-    def install(self, sid: str) -> Job:
+    def branch_of(self, sid: str, max_age: float = 15.0) -> str:
+        """The installed branch (cached briefly: it runs git for checkouts)."""
+        s = self.studios[sid]
+        hit = self._branch_cache.get(sid)
+        if hit and time.time() - hit[0] < max_age:
+            return hit[1]
+        b = updates.installed_branch(s.find_dir(), s.branch)
+        self._branch_cache[sid] = (time.time(), b)
+        return b
+
+    def install(self, sid: str, branch: str | None = None) -> Job:
+        """Install (or, given a branch for an installed studio, switch it to
+        that branch). Without a branch: the registry's default branch."""
         s = self.studios[sid]
         if self._busy(sid):
             raise RuntimeError("a job is already running for this studio")
+        b = valid_branch(branch) if branch else s.branch
         d = s.install_dir()
         d.parent.mkdir(parents=True, exist_ok=True)
-        q = shlex.quote(str(d))
-        url = f"https://github.com/{s.repo}/archive/{s.branch}.tar.gz"
-        script = f"""set -eo pipefail
-if [ ! -f {q}/{shlex.quote(s.marker)} ]; then
-  echo "▸ Downloading {s.repo} ({s.branch})"
+        q, qb = shlex.quote(str(d)), shlex.quote(b)
+        url = shlex.quote(f"https://github.com/{s.repo}/archive/refs/heads/{b}.tar.gz")
+        installed = s.find_dir() is not None
+        if installed and branch and (d / ".git").exists():
+            # A git checkout switches branch the git way; uncommitted edits make it stop.
+            fetch = f"""echo "▸ Switching the git checkout to {b}"
+git -C {q} fetch origin {qb}
+git -C {q} checkout {qb} 2>/dev/null || git -C {q} checkout -b {qb} --track origin/{qb}
+git -C {q} pull --ff-only origin {qb}
+echo "✔ {s.name} is on {b} ($(git -C {q} rev-parse --short HEAD))"
+"""
+        elif installed and branch:
+            fetch = f"""echo "▸ Downloading {s.repo} ({b}) over the installed copy"
+curl -fSL --progress-bar {url} | tar -xz --strip-components=1 -C {q}
+echo "✔ Source from {b} in {d}"
+"""
+        else:
+            fetch = f"""if [ ! -f {q}/{shlex.quote(s.marker)} ]; then
+  echo "▸ Downloading {s.repo} ({b})"
   mkdir -p {q}
-  curl -fSL --progress-bar {shlex.quote(url)} | tar -xz --strip-components=1 -C {q}
+  curl -fSL --progress-bar {url} | tar -xz --strip-components=1 -C {q}
   echo "✔ Source in {d}"
 fi
-cd {q}
+"""
+        script = f"""set -eo pipefail
+{fetch}cd {q}
 chmod +x ./*.sh webapp/*.sh 2>/dev/null || true
 echo "▸ Running setup: {s.setup}"
+export STUDIO_BRANCH={qb}
 {s.setup}
 """
-        return self._run_job(sid, "install", script, d.parent, after=self._recorder(sid))
+        return self._run_job(sid, "install", script, d.parent, after=self._recorder(sid, b))
 
     def update(self, sid: str) -> Job:
         s = self.studios[sid]
@@ -380,14 +437,22 @@ echo "▸ Running setup: {s.setup}"
             raise RuntimeError("a job is already running for this studio")
         if not s.update:
             raise RuntimeError("this studio has no update command")
-        return self._run_job(sid, "update", s.fmt(s.update), s.install_dir(),
-                             after=self._recorder(sid))
+        b = self.branch_of(sid)
+        return self._run_job(sid, "update", f"export STUDIO_BRANCH={shlex.quote(b)}\n" + s.fmt(s.update, b),
+                             s.install_dir(), after=self._recorder(sid, b))
 
-    def _recorder(self, sid: str) -> Callable[[int], None]:
-        """After a good install/update, remember which commit is on disk."""
+    def _recorder(self, sid: str, branch: str | None = None) -> Callable[[int], None]:
+        """After a good install/update, remember which commit (and branch) is on disk."""
         s = self.studios[sid]
+        branch = branch or s.branch
 
         def after(code: int) -> None:
+            try:
+                _after(code)
+            finally:
+                self._branch_cache.pop(sid, None)     # after the record is written
+
+        def _after(code: int) -> None:
             if code != 0:
                 return
             if not s.is_installed():
@@ -395,10 +460,10 @@ echo "▸ Running setup: {s.setup}"
                 missing = s.marker if s.find_dir() is None else s.installed_marker
                 raise RuntimeError(f"Setup finished, but {missing} was not found in {where}: see the log")
             try:
-                updates._cache.pop(f"{s.repo}@{s.branch}", None)
-                info = updates.latest_commit(s.repo, s.branch)
+                updates._cache.pop(f"{s.repo}@{branch}", None)
+                info = updates.latest_commit(s.repo, branch)
                 if not (s.install_dir() / ".git").exists():
-                    updates.record_version(s.install_dir(), info)
+                    updates.record_version(s.install_dir(), info, branch)
             except Exception:                                  # noqa: BLE001
                 pass
         return after
@@ -437,6 +502,7 @@ echo "▸ Running setup: {s.setup}"
             return
         rt.error, rt.stopping, rt.healthy = "", False, False
         rt.job = Job(kind="launch")
+        self._fresh_log(sid)
 
         def work():
             try:
@@ -477,21 +543,58 @@ echo "▸ Running setup: {s.setup}"
             self.push()
 
     def _signal(self, sid: str, sig: int) -> None:
+        """Signal every process of a studio exactly once (a second SIGTERM can
+        interrupt a studio's own clean shutdown): its owned process group, the
+        matched processes (their groups when they lead one), and their children."""
         rt = self.rt[sid]
+        done: set[int] = set()
+
+        def group_pids(pg: int) -> set[int]:
+            out = set()
+            for p in psutil.process_iter(["pid"]):
+                try:
+                    if os.getpgid(p.pid) == pg:
+                        out.add(p.pid)
+                except OSError:
+                    pass
+            return out
+
+        def kill_group(pg: int) -> None:
+            members = group_pids(pg)
+            if members - done:
+                try:
+                    os.killpg(pg, sig)
+                except OSError:
+                    pass
+            done.update(members)
+
         if rt.owned is not None and rt.owned.poll() is None:
-            try:
-                os.killpg(rt.owned.pid, sig)
-            except OSError:
-                pass
+            kill_group(rt.owned.pid)
         for p in self.procs(sid):
             try:
+                kids = p.children(recursive=True)          # e.g. the RAG worker's milvus
+            except psutil.Error:
+                kids = []
+            try:
                 pg = os.getpgid(p.pid)
-                if pg == p.pid:            # a session/group leader: take its group
-                    os.killpg(pg, sig)
+            except OSError:
+                pg = None
+            if p.pid not in done:
+                if pg == p.pid:                             # a group leader: take its group
+                    kill_group(pg)
                 else:
-                    p.send_signal(sig)
-            except (OSError, psutil.Error):
-                pass
+                    try:
+                        p.send_signal(sig)
+                    except psutil.Error:
+                        pass
+                    done.add(p.pid)
+            for k in kids:
+                if k.pid not in done:
+                    try:
+                        k.send_signal(sig)
+                    except psutil.Error:
+                        pass
+                    done.add(k.pid)
 
     def stop(self, sid: str, wait: bool = False, force: bool = False) -> None:
         """Stop gracefully (the studio's stop command or SIGTERM), then SIGKILL
@@ -526,6 +629,11 @@ echo "▸ Running setup: {s.setup}"
                         self._signal(sid, signal.SIGKILL)
                 time.sleep(0.3)
                 self.scan()
+                if not force and not self.is_running(sid):
+                    # A clean stop: start the on-screen log afresh, so the studio's
+                    # own shutdown noise is not what the next viewer sees first.
+                    self._fresh_log(sid)
+                    self._note(sid, f"Stopped · {time.strftime('%H:%M:%S')}", self.run_log(sid))
             except Exception as e:                               # noqa: BLE001
                 rt.error = str(e)
             finally:

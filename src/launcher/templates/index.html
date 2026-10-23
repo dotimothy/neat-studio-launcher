@@ -24,8 +24,8 @@
       } catch (e) { /* storage blocked: play it */ }
     })();
   </script>
-  <link rel="stylesheet" href="{{ url_for('static', filename='launcher.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/xterm.css') }}">
+  <link rel="stylesheet" href="{{ asset('launcher.css') }}">
+  <link rel="stylesheet" href="{{ asset('vendor/xterm.css') }}">
 </head>
 <body>
   <div class="intro" id="intro" aria-hidden="true">
@@ -72,6 +72,7 @@
         <div class="status-menu hidden" id="statusMenu" role="menu"></div>
       </div>
       <button class="header-icon-btn" data-replay-intro title="Replay Launch Animation" aria-label="Replay Launch Animation"><svg><use href="#i-rocket"/></svg></button>
+      <button class="header-icon-btn" id="fullscreenBtn" title="Full Screen" aria-label="Full Screen" aria-pressed="false"><svg><use href="#i-fs-enter"/></svg></button>
       <button class="header-icon-btn" id="themeToggle" title="Toggle Light / Dark" aria-label="Toggle theme"><svg><use href="#i-moon"/></svg></button>
       <img class="sima-logo js-themed-logo light-only" src="{{ url_for('static', filename='icons/logo_dark.png') }}" alt="SiMa.ai">
       <img class="sima-logo js-themed-logo dark-only" src="{{ url_for('static', filename='icons/logo_bright.png') }}" alt="SiMa.ai">
@@ -243,14 +244,17 @@
       <symbol id="i-rocket" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.3-2 5-2 5s3.7-.5 5-2c.7-.8.7-2.1-.1-2.9a2.2 2.2 0 0 0-2.9-.1z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.9A12.9 12.9 0 0 1 22 2c0 2.7-.8 7.5-6 11a22.4 22.4 0 0 1-4 2z"/><path d="M9 12H4s.6-3 2-4c1.6-1.1 5 0 5 0M12 15v5s3-.6 4-2c1.1-1.6 0-5 0-5"/></symbol>
       <symbol id="i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></symbol>
       <symbol id="i-dots" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></symbol>
+      <symbol id="i-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="7" r="2.5"/><path d="M6 7.5v9M18 9.5c0 4-4 4.5-9.5 6.5"/></symbol>
+      <symbol id="i-fs-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9V4a1 1 0 0 1 1-1h5M15 3h5a1 1 0 0 1 1 1v5M21 15v5a1 1 0 0 1-1 1h-5M9 21H4a1 1 0 0 1-1-1v-5"/></symbol>
+      <symbol id="i-fs-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v5a1 1 0 0 1-1 1H3M21 9h-5a1 1 0 0 1-1-1V3M15 21v-5a1 1 0 0 1 1-1h5M3 15h5a1 1 0 0 1 1 1v5"/></symbol>
       <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
     </defs>
   </svg>
 
-  <script src="{{ url_for('static', filename='vendor/socket.io.min.js') }}"></script>
-  <script src="{{ url_for('static', filename='vendor/xterm.js') }}"></script>
-  <script src="{{ url_for('static', filename='vendor/addon-fit.js') }}"></script>
+  <script src="{{ asset('vendor/socket.io.min.js') }}"></script>
+  <script src="{{ asset('vendor/xterm.js') }}"></script>
+  <script src="{{ asset('vendor/addon-fit.js') }}"></script>
   <script>window.LAUNCHER = { version: "{{ version }}", static: "{{ url_for('static', filename='') }}" };</script>
-  <script src="{{ url_for('static', filename='launcher.js') }}"></script>
+  <script src="{{ asset('launcher.js') }}"></script>
 </body>
 </html>

@@ -1,13 +1,14 @@
 """Neat Studio Launcher: Flask + Socket.IO app."""
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, url_for
 from flask_socketio import SocketIO, join_room, leave_room
 
 import registry
@@ -40,6 +41,24 @@ def create_app(studios=None, logs_dir=None, start_monitor=True):
     def info():
         return sysinfo.collect(disk_path)
 
+    # Static links carry a stamp of the file's content, so a browser never runs
+    # a cached launcher.js / launcher.css after an update.
+    stamps: dict[str, tuple[float, str]] = {}
+
+    def asset(name: str) -> str:
+        path = HERE / "static" / name
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return url_for("static", filename=name)
+        hit = stamps.get(name)
+        if not hit or hit[0] != mtime:
+            hit = (mtime, hashlib.sha1(path.read_bytes()).hexdigest()[:10])
+            stamps[name] = hit
+        return url_for("static", filename=name, v=hit[1])
+
+    app.jinja_env.globals["asset"] = asset
+
     def payload():
         snaps = {s["id"]: s for s in mgr.snapshots()}
         return [{**s.public(), **snaps[s.id]} for s in studios]
@@ -55,7 +74,10 @@ def create_app(studios=None, logs_dir=None, start_monitor=True):
     # -- pages ---------------------------------------------------------------
     @app.get("/")
     def index():
-        return render_template("index.html", version=VERSION, studios=[s.public() for s in studios])
+        resp = app.make_response(render_template("index.html", version=VERSION,
+                                                  studios=[s.public() for s in studios]))
+        resp.headers["Cache-Control"] = "no-cache"      # always pick up new asset stamps
+        return resp
 
     @app.get("/health")
     def health():
@@ -74,7 +96,7 @@ def create_app(studios=None, logs_dir=None, start_monitor=True):
         body = request.get_json(silent=True) or {}
         try:
             if action == "install":
-                mgr.install(sid)
+                mgr.install(sid, body.get("branch") or None)
             elif action == "launch":
                 mgr.launch(sid, mode=body.get("mode", "exclusive"))
             elif action == "stop":
@@ -114,19 +136,32 @@ def create_app(studios=None, logs_dir=None, start_monitor=True):
         mgr.rt[sid].log.clear()
         return jsonify({"ok": True})
 
+    @app.get("/api/studios/<sid>/branches")
+    def api_branches(sid):
+        s = studio_or_404(sid)
+        if s is None:
+            return err("unknown studio", 404)
+        if request.args.get("force"):
+            updates._cache.pop(f"{s.repo}#branches", None)
+        try:
+            data = updates.branches(s.repo)
+        except Exception as e:                                 # noqa: BLE001
+            return err(f"cannot list branches: {e}", 502)
+        return jsonify({**data, "installed": mgr.branch_of(sid) if s.find_dir() else None})
+
     @app.get("/api/studios/<sid>/updates")
     def api_updates_one(sid):
         s = studio_or_404(sid)
         if s is None:
             return err("unknown studio", 404)
         if request.args.get("force"):
-            updates._cache.pop(f"{s.repo}@{s.branch}", None)
+            updates.forget(s.repo)
         return jsonify(updates.check(s.repo, s.branch, s.find_dir()))
 
     @app.get("/api/updates")
     def api_updates():
         if request.args.get("force"):
-            updates._cache.clear()
+            updates.forget()
         jobs = {s.id: (s.repo, s.branch, s.find_dir()) for s in studios}
         jobs["launcher"] = (LAUNCHER_REPO, LAUNCHER_BRANCH, ROOT)
         with ThreadPoolExecutor(max_workers=6) as ex:
@@ -173,6 +208,8 @@ def create_app(studios=None, logs_dir=None, start_monitor=True):
     # -- sockets ---------------------------------------------------------------
     @sio.on("connect")
     def on_connect():
+        # The page compares this with its own script stamp and reloads if it is stale.
+        sio.emit("hello", {"asset": asset("launcher.js").rsplit("v=", 1)[-1], "version": VERSION}, to=request.sid)
         sio.emit("studios", mgr.snapshots(), to=request.sid)
         sio.emit("system", info(), to=request.sid)
 

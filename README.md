@@ -1,6 +1,6 @@
 # Neat Studio Launcher
 
-<p align="center"><img src="docs/media/showcase.png" alt="Neat Studio Launcher showcase" width="860"></p>
+<p align="center"><img src="docs/media/showcase.gif" alt="The launcher home page: studio logos orbit the Modalix chip, then the studio cards and the See Them in Action demo reel" width="860"></p>
 <p align="center"><em>The out-of-box home for the premier Neat studios on SiMa.ai Modalix: one click to install, one click to launch.</em></p>
 
 ## Metadata
@@ -15,9 +15,20 @@
 | Binary Name | `neat-studio` |
 | Studios | [GenAI](https://github.com/dotimothy/neat-genai-studio) · [Decision](https://github.com/dotimothy/neat-decision-studio) · [Change](https://github.com/dotimothy/neat-change-studio) · [DINO, zero-shot vision detection](https://github.com/dotimothy/neat-dino-studio) |
 
-## Concept
+## Preview
 
-<p align="center"><img src="docs/media/launch-animation.png" alt="Launch animation: a Modalix chip warps in from space and bursts into the Neat palette" width="640"></p>
+<table>
+<tr>
+<td width="50%"><img src="docs/media/intro.gif" alt="Launch animation: a Modalix chip warps in through a starfield, bursts into the Neat palette and reveals the four studios"><br><b>Launch Animation.</b> A SiMa.ai Modalix chip warps in through a starfield, bursts into the Neat palette and reveals the four studios. A first visit waits for <b>Explore the Studios</b>.</td>
+<td width="50%"><img src="docs/media/launch.gif" alt="Launching Neat Decision Studio alongside running studios, with a live boot log, then the studio inside the launcher"><br><b>One-Click Launch.</b> Neat Decision Studio starts next to the studios already on the MLA. Its boot log streams live, then it opens inside the launcher with a log drawer.</td>
+</tr>
+<tr>
+<td><img src="docs/media/gallery.gif" alt="Browsing the Neat Decision Studio demo gallery with the arrow keys, a game thumbnail and the full-screen viewer"><br><b>Demo Galleries.</b> Every studio's README GIFs are built in: arrow keys, Features and Games groups, and a full-screen viewer.</td>
+<td><img src="docs/media/manager.gif" alt="The Manager: studio status, processes, update checks by commit hash, the board shell, logs and a branch picker"><br><b>Manager.</b> Studio status, processes, update checks by commit hash, a shell on the board, live logs, and installing from another branch.</td>
+</tr>
+</table>
+
+## Concept
 
 Opening the launcher plays a short launch animation: a SiMa.ai Modalix chip flies in from deep space, bursts into the Neat colour palette, and the launcher appears. It plays once per browser session. Skip, Esc or a double-click ends it, and it never plays on its own with reduced motion. Replay it with the rocket button in the header, the **Replay Launch Animation** link in the footer, or `?intro` in the URL. `?nointro` turns it off.
 
@@ -33,9 +44,12 @@ The header shows every studio's status at a glance: one icon and dot per studio,
 One web portal on the board that:
 
 - **Showcases** each studio and what it proves about Modalix (on-device, real-time on the MLA, private).
-- **Installs** any studio with one click: it downloads the source, runs the studio's own `setup.sh` non-interactively and streams the output live.
+- **Installs** any studio with one click: it downloads the source, runs the studio's own `setup.sh` non-interactively and streams the output live. Install uses each repo's default branch (`main`). **Install From Branch…** (on the studio page, in a card's **⋯** menu, or in the Manager) lists the repo's branches and installs any of them. For an installed studio it becomes **Switch Branch…**: a downloaded copy gets that branch's files over the installed ones (models and settings stay), and a git checkout does a `git checkout` that stops if there are uncommitted edits. The branch is remembered, and update checks and Update follow it.
 - **Launches** a studio with one click and opens it inside the launcher (or pops it out to its own tab). The MLA runs best with one studio at a time, so launching one offers to stop the others first, or to run alongside them.
-- **Checks for updates** against each studio's GitHub repository (and the launcher's own) and updates with one click.
+- **Checks for updates** by commit hash, against each studio's GitHub repository (and the launcher's own), and updates with one click:
+  - a **git checkout** compares its HEAD with the same branch on GitHub and says how many commits it is behind or ahead
+  - a **downloaded copy** has every file hashed the way git does and compared with the files in the branch's latest commit: identical means up to date; otherwise it finds which recent commit is installed ("N Commits Behind") or says "Differs From Latest in N Files" and lists them
+  - everything goes over plain git, not GitHub's REST API, so there is no hourly request limit: branch lists come from `git ls-remote`, and downloaded copies are compared against a small mirror of each repo in `.cache/mirrors` (commit history and file lists only, a few hundred KB). If GitHub can't be reached, the last result stays on screen, marked as last known.
 - **Manages** everything: per-studio processes with PID, CPU, memory and uptime, Stop (graceful, then SIGKILL after 10 s), Kill, Kill a single PID, Restart, Uninstall and Reset MLA. It also shows live logs for every studio and a full interactive shell in the browser.
 
 Studios that were already installed (for example `/media/nvme/laya` for Decision) or started some other way (desktop icon, alias) are found and managed too.
@@ -91,7 +105,7 @@ studios:
     setup: CYWS_MODELS=all ./setup.sh --no-prompt --no-desktop-icon
 ```
 
-Environment variables: `LAUNCHER_PORT` (8090), `LAUNCHER_HOST`, `LAUNCHER_HTTPS=0`, `NEAT_STUDIOS_ROOT`, `NEAT_LAUNCHER_STOP_GRACE` (10 s), `GITHUB_TOKEN` (for update checks against the GitHub API rate limit).
+Environment variables: `LAUNCHER_PORT` (8090), `LAUNCHER_HOST`, `LAUNCHER_HTTPS=0`, `NEAT_STUDIOS_ROOT`, `NEAT_LAUNCHER_STOP_GRACE` (10 s), `NEAT_LAUNCHER_CACHE` (where the update-check mirrors live; default `.cache`).
 
 ## Verify
 

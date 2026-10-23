@@ -168,7 +168,7 @@
     setTimeout(() => el.remove(), 4600);
   }
 
-  function modal({ title, body, actions, input }) {
+  function modal({ title, body, actions, input, onOpen }) {
     return new Promise((resolve) => {
       const back = document.createElement("div");
       back.className = "modal-back";
@@ -191,6 +191,7 @@
       back.addEventListener("click", (e) => { if (e.target === back) close(null); });
       document.body.appendChild(back);
       const inp = back.querySelector("#modalInput"); if (inp) inp.focus();
+      if (typeof onOpen === "function") onOpen(back);
     });
   }
 
@@ -209,6 +210,31 @@
     setTimeout(() => root.classList.remove("theme-anim"), 380);
   });
   applyThemeIcon();
+
+  // Full screen: the whole launcher (a studio open inside it fills the screen too).
+  (() => {
+    const btn = $("#fullscreenBtn");
+    const root = document.documentElement;
+    const can = root.requestFullscreen || root.webkitRequestFullscreen;
+    if (!can || document.fullscreenEnabled === false) { btn.classList.add("hidden"); return; }
+    const isFs = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+    const sync = () => {
+      const on = isFs();
+      btn.querySelector("use").setAttribute("href", on ? "#i-fs-exit" : "#i-fs-enter");
+      btn.title = on ? "Exit Full Screen" : "Full Screen";
+      btn.setAttribute("aria-label", btn.title);
+      btn.setAttribute("aria-pressed", String(on));
+    };
+    btn.addEventListener("click", async () => {
+      try {
+        if (isFs()) await (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+        else await (root.requestFullscreen || root.webkitRequestFullscreen).call(root);
+      } catch (e) { toast("Full Screen Isn't Available Here", "err"); }
+    });
+    document.addEventListener("fullscreenchange", sync);
+    document.addEventListener("webkitfullscreenchange", sync);
+    sync();
+  })();
 
   // ------------------------------------------------------------------ terminals
   const XTERM_THEME = {
@@ -256,7 +282,22 @@
 
   // ------------------------------------------------------------------ socket
   const socket = io({ transports: ["websocket", "polling"] });
+  // After an update the server's script stamp changes: reload so this page
+  // never keeps running old code (one reload per stamp, so it can't loop).
+  const MY_STAMP = ((document.querySelector('script[src*="launcher.js"]') || {}).src || "").split("v=")[1] || "";
+  socket.on("hello", ({ asset }) => {
+    if (!asset || !MY_STAMP || asset === MY_STAMP) return;
+    let tried = "";
+    try { tried = sessionStorage.getItem("neatReloadedFor") || ""; } catch (e) { /* ignore */ }
+    if (tried === asset) return;
+    try { sessionStorage.setItem("neatReloadedFor", asset); sessionStorage.setItem("neatIntroPlayed", "1"); } catch (e) { /* ignore */ }
+    toast("Launcher Updated: Reloading…", "info");
+    setTimeout(() => location.reload(), 900);
+  });
+  let connectedOnce = false;
   socket.on("connect", () => {
+    if (connectedOnce) checkUpdates(false);      // the launcher restarted: results may have changed
+    connectedOnce = true;
     Object.keys(logSubs).forEach((id) => { if (logSubs[id]) { logViewers.filter((v) => v.id === id).forEach((v) => { v.ready = false; v.term.reset(); }); socket.emit("subscribe_log", { id }); } });
   });
   socket.on("disconnect", () => { $("#statusText").textContent = "Reconnecting…"; $("#statusItems").dataset.k = ""; });
@@ -267,6 +308,9 @@
   socket.on("system", (sys) => { state.system = sys; renderSystem(); });
   socket.on("log_init", ({ id, data }) => {
     logViewers.filter((v) => v.id === id && !v.ready).forEach((v) => { v.term.reset(); v.term.write(data); v.ready = true; });
+  });
+  socket.on("log_reset", ({ id }) => {
+    logViewers.filter((v) => v.id === id).forEach((v) => v.term.reset());
   });
   socket.on("log", ({ id, data }) => {
     logViewers.filter((v) => v.id === id && v.ready).forEach((v) => v.term.write(data));
@@ -318,6 +362,35 @@
     }
   }
 
+  // Install from (or switch an installed studio to) another branch.
+  async function pickBranch(id) {
+    const st = state.studios[id];
+    let data;
+    try { data = await api(`/api/studios/${id}/branches`); }
+    catch (e) { toast(e.message, "err"); return; }
+    const current = st.installed ? (data.installed || st.branch) : data.default;
+    let chosen = current;
+    const options = data.branches.map((b) => `<option value="${esc(b.name)}" ${b.name === current ? "selected" : ""}>${esc(b.name)}${b.name === data.default ? " (Default)" : ""}${st.installed && b.name === data.installed ? " (Installed)" : ""} · ${short(b.sha)}</option>`).join("");
+    const switching = st.installed;
+    const go = await modal({
+      title: switching ? `Switch ${st.name} to Another Branch` : `Install ${st.name} From a Branch`,
+      body: `<p>${switching
+          ? `Installed from <b class="mono">${esc(data.installed || st.branch)}</b>. The chosen branch's files replace the installed ones (models and settings stay), then setup runs again.`
+          : `Install uses <b class="mono">${esc(data.default)}</b> unless you pick another branch.`}</p>
+        <label class="field"><span>Branch</span><select id="branchSelect">${options}</select></label>
+        <p class="muted" style="font-size:12.5px">${data.branches.length} ${data.branches.length === 1 ? "Branch" : "Branches"} on <span class="mono">${esc(st.repo)}</span>. Update checks follow the branch you install.</p>`,
+      actions: [{ label: "Cancel", value: false, cls: "ghost" }, { label: switching ? "Switch Branch" : "Install", value: true, cls: "primary" }],
+      onOpen: (el) => { const sel = el.querySelector("#branchSelect"); sel.focus(); sel.addEventListener("change", () => { chosen = sel.value; }); },
+    });
+    if (!go) return;
+    if (switching && chosen === (data.installed || st.branch)) {
+      const again = await modal({ title: "Reinstall the Same Branch?", body: `<p><b class="mono">${esc(chosen)}</b> is already installed. Download it again and re-run setup?</p>`,
+        actions: [{ label: "Cancel", value: false, cls: "ghost" }, { label: "Reinstall", value: true, cls: "primary" }] });
+      if (!again) return;
+    }
+    if (await act(id, "install", { branch: chosen })) toast(`${switching ? "Switching" : "Installing"} ${st.name} to ${chosen}`, "info");
+  }
+
   async function stop(id, force) {
     const st = state.studios[id];
     if (force) {
@@ -359,13 +432,18 @@
     if (await act(id, "update")) toast(`Updating ${st.name}`, "info");
   }
 
+  let lastUpdateCheck = 0;
   async function checkUpdates(force) {
+    lastUpdateCheck = Date.now();
     $$("#checkUpdatesBtn, #checkUpdatesBtn2").forEach((b) => { b.disabled = true; b.innerHTML = `<span class="spin"></span>Checking…`; });
     try {
       state.updates = await api(`/api/updates${force ? "?force=1" : ""}`);
       if (force) {
-        const n = Object.values(state.updates).filter((u) => ["available", "diverged"].includes(u.status)).length;
-        toast(n ? `${n} update${n > 1 ? "s" : ""} available` : "Everything is up to date", n ? "info" : "ok");
+        const all = Object.values(state.updates);
+        const n = all.filter((u) => ["available", "diverged"].includes(u.status)).length;
+        const failed = all.filter((u) => u.status === "error" || u.stale);
+        if (failed.length) toast(`Could Not Check ${failed.length} of ${all.length}: ${(failed[0].note || failed[0].error || "").split(";")[0]}`, "err");
+        else toast(n ? `${n} Update${n > 1 ? "s" : ""} Available` : "Everything Is Up to Date", n ? "info" : "ok");
       }
     } catch (e) {
       if (force) toast(`Update check failed: ${e.message}`, "err");
@@ -391,6 +469,7 @@
       update: () => update(id),
       uninstall: () => uninstall(id),
       cancel: () => act(id, "cancel"),
+      branch: () => pickBranch(id),
       checkone: () => checkOne(id),
       dismiss: () => act(id, "dismiss"),
       popout: () => popOut(id),
@@ -658,7 +737,7 @@
               <div><h3>${esc(st.name)}</h3><div class="cat">${esc(st.category)}</div></div>
             </div>
             <p class="card-tagline">${esc(st.tagline)}</p>
-            <ul class="bullets">${(st.bullets || []).map((b) => `<li>${esc(b)}</li>`).join("")}</ul>
+            <ul class="bullets">${(st.bullets || []).map((b) => `<li>${esc(typeof b === "string" ? b : JSON.stringify(b))}</li>`).join("")}</ul>
             <div class="js-job"></div>
             <div class="card-foot">
               <div class="metric"><b>${esc(st.metric.value || "")}</b><span>${esc(st.metric.label || "")}</span></div>
@@ -670,7 +749,7 @@
         grid.appendChild(card);
         watchGifs(card);
       }
-      const key = `${st.state}|${st.app_error}|${st.job && st.job.step}|${Math.floor((st.job && st.job.elapsed) || 0)}|${(state.updates[id] || {}).status}|${st.error}`;
+      const key = `${st.state}|${st.branch}|${st.app_error}|${st.job && st.job.step}|${Math.floor((st.job && st.job.elapsed) || 0)}|${(state.updates[id] || {}).status}|${st.error}`;
       if (card.dataset.key === key) return;
       card.dataset.key = key;
       const sk = `${st.state}|${st.installed}`;
@@ -680,6 +759,8 @@
       pill.className = `pill js-state ${st.state}`;
       pill.innerHTML = `<i class="dot ${st.state === "running" ? "ok" : BUSY.has(st.state) ? "warn" : st.state === "error" ? "err" : ""}"></i>${STATE_LABEL[st.state] || st.state}`;
       card.querySelector(".js-update").innerHTML = updateBadge(id);
+      const cat = card.querySelector(".card-title .cat");
+      if (cat) cat.innerHTML = esc(st.category) + (st.installed && st.branch && st.branch !== st.default_branch ? ` · <span class="branch-chip">${icon("branch")}${esc(st.branch)}</span>` : "");
       card.querySelector(".js-job").innerHTML = jobHtml(st) + errorHtml(st);
       const actions = card.querySelector(".js-actions");
       const actKey = st.state;
@@ -805,6 +886,7 @@
       `<a href="#" data-act="logs:${id}">${icon("terminal")}Live Log</a>`,
       `<a href="#" data-act="checkone:${id}">${icon("refresh")}Check for Updates</a>`,
       st.installed && !busy ? `<a href="#" data-act="update:${id}">${icon("download")}Update</a>` : "",
+      !busy ? `<a href="#" data-act="branch:${id}">${icon("branch")}${st.installed ? "Switch Branch…" : "Install From Branch…"}</a>` : "",
       ["running", "starting"].includes(st.state) ? `<a href="#" data-act="stop:${id}">${icon("stop")}Stop</a>` : "",
       `<a href="${esc(st.docs)}" target="_blank" rel="noopener">${icon("external")}GitHub</a>`,
       st.installed && !busy ? `<hr><a href="#" class="danger" data-act="uninstall:${id}">${icon("trash")}Uninstall…</a>` : "",
@@ -875,6 +957,7 @@
             <div class="box update-box js-updatebox"></div>
             <dl class="kv box">
               <dt>Install</dt><dd class="mono">${esc(st.dir)}</dd>
+              <dt>Branch</dt><dd class="mono js-branch">${esc(st.installed ? st.branch : st.default_branch)}${(st.installed ? st.branch : st.default_branch) === st.default_branch ? ' <span class="muted">(Default)</span>' : ""}</dd>
               <dt>Address</dt><dd class="mono">${esc(studioUrl(st))}</dd>
               <dt>Source</dt><dd><a href="${esc(st.docs)}" target="_blank" rel="noopener">${esc(st.repo)}</a></dd>
             </dl>
@@ -915,6 +998,7 @@
         main.dataset.k = k;
         const extra = [];
         if (st.installed && !BUSY.has(st.state)) extra.push(`<button class="btn" data-act="update:${st.id}">${icon("download")}Update</button>`);
+        if (!BUSY.has(st.state)) extra.push(`<button class="btn ghost" data-act="branch:${st.id}">${icon("branch")}${st.installed ? "Switch Branch…" : "Install From Branch…"}</button>`);
         if (BUSY.has(st.state) && st.state !== "starting" && st.state !== "stopping") extra.push(`<button class="btn danger" data-act="cancel:${st.id}">${icon("x")}Cancel</button>`);
         if (st.installed && !BUSY.has(st.state)) extra.push(`<button class="btn ghost danger" data-act="uninstall:${st.id}">${icon("trash")}Uninstall</button>`);
         main.innerHTML = primaryActions(st).replace("btn primary", "btn primary lg") + extra.join("");
@@ -992,6 +1076,7 @@
       const open = state.expanded.has(id);
       const acts = [];
       if (st.state === "not_installed") acts.push(`<button class="btn sm primary" data-act="install:${id}">${icon("download")}Install</button>`);
+      if (!BUSY.has(st.state)) acts.push(`<button class="btn sm" data-act="branch:${id}" title="${st.installed ? "Switch Branch" : "Install From Branch"}" aria-label="${st.installed ? "Switch Branch" : "Install From Branch"}">${icon("branch")}</button>`);
       if (["installed", "error"].includes(st.state)) acts.push(`<button class="btn sm primary" data-act="launch:${id}">${icon("play")}Launch</button>`);
       if (up) acts.push(`<button class="btn sm" data-act="stop:${id}" ${st.state === "stopping" ? "disabled" : ""}>${icon("stop")}Stop</button>`,
         `<button class="btn sm danger" data-act="kill:${id}" title="Force kill (SIGKILL)">${icon("skull")}Kill</button>`,
@@ -1002,7 +1087,7 @@
         `<button class="btn sm danger" data-act="uninstall:${id}" title="Uninstall" aria-label="Uninstall">${icon("trash")}</button>`);
       rows.push(`<tr class="studio-row">
         <td class="c-exp">${st.procs.length ? `<button class="expander ${open ? "open" : ""}" data-act="expand:${id}" title="Processes">${icon("chevron")}</button>` : ""}</td>
-        <td class="c-studio"><div class="row-studio"><img src="${S}${st.icon_small}" alt=""><div><a href="#/studio/${id}" title="Details, update, uninstall"><b>${esc(st.name)}</b></a><div class="muted mono path" title="${esc(st.dir)}">${esc(st.dir)}${st.owned ? "" : st.procs.length ? " · Started Outside the Launcher" : ""}</div></div></div></td>
+        <td class="c-studio"><div class="row-studio"><img src="${S}${st.icon_small}" alt=""><div><a href="#/studio/${id}" title="Details, update, uninstall"><b>${esc(st.name)}</b></a><div class="muted mono path" title="${esc(st.dir)}">${esc(st.dir)}${st.installed ? ` · ${esc(st.branch)}` : ""}${st.owned ? "" : st.procs.length ? " · Started Outside the Launcher" : ""}</div></div></div></td>
         <td class="c-state" data-label="State"><span class="pill ${st.state}" ${st.app_error ? `title="${esc(st.app_error)}"` : ""}>${st.app_error ? `<i class="dot warn"></i>` : ""}${STATE_LABEL[st.state]}</span></td>
         <td class="num mono" data-label="PID">${first ? first.pid : "–"}${st.procs.length > 1 ? ` <span class="muted">+${st.procs.length - 1}</span>` : ""}</td>
         <td class="num" data-label="CPU">${up ? `${st.cpu}%` : "–"}</td>
@@ -1032,7 +1117,7 @@
     const have = inst.sha ? `<span class="mono">${short(inst.sha)}</span>` : "";
     const where = [inst.branch ? `<span class="mono">${esc(inst.branch)}</span>` : "", inst.version ? `v${esc(inst.version)}` : ""].filter(Boolean).join(" · ");
     const how = u.method === "git" ? "Git Checkout" : u.method === "files" ? "Checked File by File" : "";
-    const tail = [where, how].filter(Boolean).join(" · ");
+    const tail = [where, how, u.stale ? `<span title="${esc(u.note || "")}">Last Known: GitHub Unreachable</span>` : ""].filter(Boolean).join(" · ");
     switch (u.status) {
       case "up_to_date":
         return { pill: `<span class="pill running">Up to Date</span>`, title: "Up to Date",
@@ -1043,6 +1128,11 @@
         const files = u.changed_files && u.changed_files.length ? ` title="${esc(u.changed_files.join("\n"))}"` : "";
         return { pill: `<span class="pill update"${files}>${what}</span>`, title: what,
           detail: `${have ? `${have} → ` : "Latest: "}${latest}${tail ? ` · ${tail}` : ""}`, update: true };
+      }
+      case "modified": {
+        const files = u.changed_files && u.changed_files.length ? ` title="${esc(u.changed_files.join("\n"))}"` : "";
+        return { pill: `<span class="pill"${files}>Local Changes</span>`, title: `Latest, With Local Changes in ${plural(u.changed_count, "File")}`,
+          detail: `${have} · ${esc(L.message || "")}${tail ? ` · ${tail}` : ""}`, update: false };
       }
       case "ahead":
         return { pill: `<span class="pill">Ahead of GitHub</span>`, title: `${plural(u.ahead_by, "Local Commit")} Not on GitHub Yet`,
@@ -1159,7 +1249,8 @@
       show("studio");
       const box = same && document.querySelector(".gallery");
       const n = state.studios[m[1]] ? galleryOf(state.studios[m[1]]).length : 0;
-      if (box && m[2] && n) showGallery(box, Math.min(+m[2], n - 1)); else renderStudioPage(true);
+      if (box && m[2] && n) showGallery(box, Math.min(+m[2], n - 1));
+      else { renderStudioPage(true); if (!same) window.scrollTo(0, 0); }
       return;
     }
     if (h.startsWith("#/manager")) { state.route = { page: "manager" }; show("manager"); return; }
@@ -1175,6 +1266,7 @@
     document.body.classList.toggle("in-studio", page === "studio");
     if (page === "manager") {
       renderStats(); renderProcTable(); renderUpdates();
+      if (Date.now() - lastUpdateCheck > 60 * 1000) checkUpdates(false);   // fresh results on every visit
       if (!currentConsole) selectConsole("shell"); else setTimeout(() => consoles[currentConsole] && consoles[currentConsole].term._fit(), 30);
     }
     if (page !== "studio") window.scrollTo(0, 0);
@@ -1239,7 +1331,7 @@
     route();
     introDone.then(welcome);
     checkUpdates(false);
-    setInterval(() => checkUpdates(false), 30 * 60 * 1000);
+    setInterval(() => checkUpdates(false), 5 * 60 * 1000);
   }
   boot().catch((e) => toast(`Cannot reach the launcher: ${e.message}`, "err"));
 })();

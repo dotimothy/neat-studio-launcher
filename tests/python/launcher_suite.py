@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import tempfile
 import time
 import unittest
@@ -13,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 import procman
+import psutil
 import registry
 import updates
 from terminal import Session
@@ -258,6 +260,11 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(r["changed_count"], 2)
         self.assertEqual(r["changed_files"], ["new.txt", "run.sh"])
 
+    def test_local_edits_on_the_latest_commit_are_not_an_update(self):
+        updates.record_version(self.d, {"sha": "c2"})
+        r = self.run_check([self.commit(2, {"run.sh": "echo other\n", "sub/a.txt": "hello\n"})])
+        self.assertEqual((r["status"], r["changed_count"]), ("modified", 1))
+
     def test_export_ignored_files_are_skipped(self):
         (self.d / ".gitattributes").write_text("docs/ export-ignore\n*.gif export-ignore\n")
         r = self.run_check([self.commit(2, {"run.sh": "echo run\n", "sub/a.txt": "hello\n",
@@ -265,25 +272,62 @@ class UpdateTests(unittest.TestCase):
                                              "docs/big.gif": "gif", "x.gif": "gif"})])
         self.assertEqual(r["status"], "up_to_date")
 
-    def test_git_checkout_uses_compare(self):
+    def test_git_checkout_counts_commits_behind(self):
         g = {"sha": "local", "branch": "feature/x", "dirty": False}
         latest = {"sha": "remote", "tree": "t", "date": "2026-01-01T00:00:00Z", "message": "m"}
         with mock.patch.object(updates, "git_state", return_value=g), \
-             mock.patch.object(updates, "latest_commit", return_value=latest) as lc, \
-             mock.patch.object(updates, "_api", return_value={"status": "ahead", "ahead_by": 3, "behind_by": 0}):
+             mock.patch.object(updates, "git_compare", return_value=(latest, 0, 3)) as gc:
             r = updates.check("x/y", "main", self.d)
-        lc.assert_called_with("x/y", "feature/x")
+        self.assertEqual(gc.call_args[0][1], "feature/x")
         self.assertEqual((r["status"], r["behind_by"], r["method"]), ("available", 3, "git"))
 
     def test_git_checkout_ahead_is_not_an_update(self):
         g = {"sha": "local", "branch": "main", "dirty": True}
         latest = {"sha": "remote", "tree": "t", "date": "2026-01-01T00:00:00Z", "message": "m"}
         with mock.patch.object(updates, "git_state", return_value=g), \
-             mock.patch.object(updates, "latest_commit", return_value=latest), \
-             mock.patch.object(updates, "_api", return_value={"status": "behind", "ahead_by": 0, "behind_by": 2}):
+             mock.patch.object(updates, "git_compare", return_value=(latest, 2, 0)):
             r = updates.check("x/y", "main", self.d)
         self.assertEqual((r["status"], r["ahead_by"]), ("ahead", 2))
         self.assertTrue(r["installed"]["dirty"])
+
+    def test_git_checkout_on_unpublished_branch_falls_back(self):
+        g = {"sha": "local", "branch": "local-only", "dirty": False}
+        latest = {"sha": "local", "tree": "t", "date": "x", "message": "m"}
+        calls = []
+        def fake(d, branch, repo):
+            calls.append(branch)
+            if branch == "local-only":
+                raise updates.NotOnGitHub("that branch is not on GitHub")
+            return latest, 0, 0
+        with mock.patch.object(updates, "git_state", return_value=g), mock.patch.object(updates, "git_compare", side_effect=fake):
+            r = updates.check("x/y", "main", self.d)
+        self.assertEqual(calls, ["local-only", "main"])
+        self.assertEqual(r["status"], "up_to_date")
+
+    def test_real_git_mirror(self):
+        """End to end against a local bare repo standing in for GitHub."""
+        import subprocess
+        if not shutil.which("git"):
+            self.skipTest("git not installed")
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            src = tmp / "src"; src.mkdir()
+            run = lambda *a, cwd=src: subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True)
+            run("init", "-q", "-b", "main"); run("config", "user.email", "t@t"); run("config", "user.name", "t")
+            (src / "run.sh").write_text("v1\n"); run("add", "."); run("commit", "-qm", "one")
+            (src / "run.sh").write_text("v2\n"); run("commit", "-qam", "two")
+            (src / "run.sh").write_text("v3\n"); run("commit", "-qam", "three")
+            with mock.patch.object(updates, "_url", return_value=str(src)), \
+                 mock.patch.object(updates, "CACHE_DIR", tmp / "cache"):
+                updates._cache.clear(); updates._fetched.clear(); updates._trees.clear()
+                inst = tmp / "inst"; inst.mkdir(); (inst / "run.sh").write_text("v1\n")
+                r = updates.check("x/y", "main", inst)
+                self.assertEqual((r["status"], r["behind_by"], r["method"]), ("available", 2, "files"))
+                (inst / "run.sh").write_text("v3\n")
+                r = updates.check("x/y", "main", inst)
+                self.assertEqual(r["status"], "up_to_date")
+        finally:
+            shutil.rmtree(tmp)
 
     def test_version_file_is_reported(self):
         (self.d / "VERSION").write_text("0.2.0\n")
@@ -291,8 +335,10 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(r["installed"]["version"], "0.2.0")
 
     def test_offline(self):
-        with mock.patch.object(updates, "recent_commits", side_effect=OSError("no network")):
-            self.assertEqual(updates.check("x/y", "main", self.d)["status"], "error")
+        with mock.patch.object(updates, "recent_commits", side_effect=RuntimeError("Could not resolve host: github.com")):
+            r = updates.check("x/y", "main", self.d)
+        self.assertEqual(r["status"], "error")
+        self.assertTrue(r["offline"])
 
 
 class ApiTests(FakeBoard):
@@ -380,3 +426,141 @@ class IndexTemplateTests(FakeBoard):
         self.assertEqual(html.count('class="intro-studio"'), 4)
         for s in self.studios:
             self.assertIn(s.name, html)
+
+
+class BranchTests(FakeBoard):
+    def capture(self, sid, branch=None):
+        seen = {}
+        with mock.patch.object(self.mgr, "_run_job", side_effect=lambda sid, kind, script, cwd, after=None: seen.update(script=script, after=after)):
+            self.mgr.install(sid, branch)
+        return seen
+
+    def test_default_install_uses_main(self):
+        s = self.capture("genai")["script"]
+        self.assertIn("archive/refs/heads/main.tar.gz", s)
+        self.assertIn("export STUDIO_BRANCH=main", s)
+
+    def test_install_from_branch(self):
+        s = self.capture("genai", "feature/multi-model-studio")["script"]
+        self.assertIn("archive/refs/heads/feature/multi-model-studio.tar.gz", s)
+        self.assertIn("export STUDIO_BRANCH=feature/multi-model-studio", s)
+
+    def test_switching_an_installed_copy_downloads_over_it(self):
+        s = self.capture("dino", "grounding-dino-tiny")["script"]
+        self.assertIn("over the installed copy", s)
+        self.assertNotIn("if [ ! -f", s)
+
+    def test_switching_a_git_checkout_uses_git(self):
+        (self.root / "neat-dino-studio" / ".git").mkdir()
+        s = self.capture("dino", "dev")["script"]
+        self.assertIn("checkout", s)
+        self.assertNotIn("curl", s)
+
+    def test_bad_branch_names_are_refused(self):
+        for bad in ("../x", "-rf", "a b", "x;rm -rf /", "feat/", "a..b", ""):
+            with self.subTest(bad=bad), self.assertRaises(RuntimeError):
+                self.mgr.install("dino", bad or " ")
+
+    def test_recorded_branch_drives_update_checks(self):
+        d = self.root / "neat-dino-studio"
+        updates.record_version(d, {"sha": "abc", "date": "x"}, "grounding-dino-tiny")
+        self.assertEqual(updates.installed_branch(d, "main"), "grounding-dino-tiny")
+        self.mgr._branch_cache.clear()
+        self.assertEqual(self.mgr.branch_of("dino"), "grounding-dino-tiny")
+        seen = {}
+        with mock.patch.object(updates, "_check_files", side_effect=lambda repo, branch, d: seen.setdefault("b", branch) and {"installed": {}}):
+            updates.check("x/y", "main", d)
+        self.assertEqual(seen["b"], "grounding-dino-tiny")
+        # A later record without a branch keeps the branch.
+        updates.record_version(d, {"sha": "def"})
+        self.assertEqual(updates.recorded(d)["branch"], "grounding-dino-tiny")
+
+
+class RegistryTextTests(unittest.TestCase):
+    def test_every_visible_field_is_text(self):
+        """A stray ': ' in studios.yaml turns a bullet into a mapping ([object Object])."""
+        for s in registry.load():
+            for b in s.bullets:
+                self.assertIsInstance(b, str, f"{s.id} bullet {b!r}")
+            for v in (s.tagline, s.pitch, s.category, s.name):
+                self.assertIsInstance(v, str, s.id)
+            for k, v in s.metric.items():
+                self.assertIsInstance(v, str, f"{s.id} metric {k}")
+            for g in s.gallery:
+                self.assertIsInstance(g["title"], str, s.id)
+                self.assertIsInstance(g["caption"], str, s.id)
+
+
+class OfflineTests(unittest.TestCase):
+    def test_offline_keeps_last_good_result(self):
+        import urllib.error
+        d = Path(tempfile.mkdtemp())
+        try:
+            good = {"status": "up_to_date", "method": "files", "installed": {}, "latest": {"sha": "a"}}
+            with mock.patch.object(updates, "_check", return_value=good):
+                updates.check("x/y", "main", d)
+            limited = {"status": "error", "offline": True, "error": "cannot reach GitHub"}
+            with mock.patch.object(updates, "_check", return_value=limited):
+                r = updates.check("x/y", "main", d)
+            self.assertEqual(r["status"], "up_to_date")
+            self.assertTrue(r["stale"])
+        finally:
+            shutil.rmtree(d)
+
+    def test_ls_remote_parsing(self):
+        out = "ref: refs/heads/dev\tHEAD\nabc\tHEAD\n111\trefs/heads/dev\n222\trefs/heads/feature/x\n"
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stdout=out, stderr="")):
+            r = updates.ls_remote("x/y")
+        self.assertEqual(r["default"], "dev")
+        self.assertEqual([b["name"] for b in r["branches"]], ["dev", "feature/x"])
+
+
+class ChildProcessTests(FakeBoard):
+    def test_stop_also_stops_child_processes(self):
+        import subprocess
+        d = self.root / "neat-change-studio"
+        # A studio process (started elsewhere, not a group leader) with a child of its own.
+        parent = subprocess.Popen(["python3", "-c",
+            "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+            f"exec(open('{d / 'fake.py'}').read().replace('sys.argv[1]', '18098'))", str(d / "fake.py")])
+        try:
+            self.assertTrue(wait_for(lambda: self.refresh("change") == "running"))
+            kids = psutil.Process(parent.pid).children(recursive=True)
+            self.assertTrue(kids)
+            self.mgr.stop("change", wait=True)
+            self.assertTrue(wait_for(lambda: not any(k.is_running() and k.status() != psutil.STATUS_ZOMBIE for k in kids), 5))
+        finally:
+            for k in psutil.Process(parent.pid).children(recursive=True) if parent.poll() is None else []:
+                k.kill()
+            if parent.poll() is None:
+                parent.kill()
+
+
+class CleanStopLogTests(FakeBoard):
+    def test_clean_stop_starts_a_fresh_log(self):
+        self.mgr.launch("dino")
+        self.assertTrue(wait_for(lambda: self.refresh("dino") == "running"))
+        self.mgr.tail_once()
+        self.assertIn("Ready", self.mgr.rt["dino"].log.text())
+        self.mgr.stop("dino", wait=True)
+        self.mgr.tail_once()
+        text = self.mgr.rt["dino"].log.text()
+        self.assertNotIn("Ready", text)
+        self.assertIn("Stopped", text)
+
+
+class SingleSignalTests(FakeBoard):
+    def test_each_process_gets_one_sigterm(self):
+        """A launched studio is both in the owned group and matched by pattern:
+        it must still receive SIGTERM only once."""
+        sent = []
+        real_killpg, real_send = os.killpg, psutil.Process.send_signal
+        self.mgr.launch("dino")
+        self.assertTrue(wait_for(lambda: self.refresh("dino") == "running"))
+        pids = {p.pid for p in self.mgr.procs("dino")} | {self.mgr.rt["dino"].owned.pid}
+        with mock.patch("os.killpg", side_effect=lambda pg, sig: (sent.append(("group", pg)), real_killpg(pg, sig))), \
+             mock.patch.object(psutil.Process, "send_signal", autospec=True,
+                               side_effect=lambda self_, sig: (sent.append(("pid", self_.pid)), real_send(self_, sig))):
+            self.mgr._signal("dino", signal.SIGTERM)
+        hits = [x for x in sent if (x[0] == "group" and x[1] == self.mgr.rt["dino"].owned.pid) or (x[0] == "pid" and x[1] in pids)]
+        self.assertEqual(len(hits), 1, sent)

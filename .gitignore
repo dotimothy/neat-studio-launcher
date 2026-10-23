@@ -7,3 +7,4 @@ config.local.yaml
 .neat-launcher.pid
 .neat-launcher.url
 .pytest_cache/
+.cache/

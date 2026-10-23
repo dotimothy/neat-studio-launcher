@@ -709,7 +709,7 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .ss-item { width: 22px; height: 22px; }
   .ss-item img { width: 13px; height: 13px; }
   .ss-caret { display: none; }
-  [data-replay-intro].header-icon-btn { display: none; }
+  [data-replay-intro].header-icon-btn, #fullscreenBtn { display: none; }
   .reel { grid-auto-columns: 78%; }
 }
 
@@ -750,3 +750,11 @@ th, td { padding-left: 12px; padding-right: 12px; }
 }
 .row-studio { min-width: 0; }
 .row-studio > div { min-width: 0; }
+
+/* Branch picker and badges */
+.field { display: grid; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.field select { height: 40px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); padding: 0 10px; font-family: var(--code-font); font-size: 13px; }
+.field select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.branch-chip { display: inline-flex; align-items: center; gap: 4px; font-family: var(--code-font); font-size: 11px; color: var(--accent-strong); }
+:root[data-theme="dark"] .branch-chip { color: var(--accent); }
+.branch-chip svg { width: 11px; height: 11px; }

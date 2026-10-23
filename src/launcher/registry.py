@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,12 +72,20 @@ class Studio:
             return False
         return not self.installed_marker or (d / self.installed_marker).exists()
 
-    def fmt(self, text: str) -> str:
+    def fmt(self, text: str, branch: str | None = None) -> str:
         return text.format(dir=str(self.install_dir()), repo=self.repo,
-                           branch=self.branch, port=self.port)
+                           branch=branch or self.branch, port=self.port)
 
-    def process_patterns(self) -> list[str]:
-        return [self.fmt(p) for p in self.processes]
+    def process_patterns(self) -> list:
+        """Substrings of a process's command line, or (prefixed "re:") regular
+        expressions in which {dir} is the escaped install directory."""
+        out = []
+        for p in self.processes:
+            if p.startswith("re:"):
+                out.append(re.compile(p[3:].format(dir=re.escape(str(self.install_dir())))))
+            else:
+                out.append(self.fmt(p))
+        return out
 
     def log_paths(self) -> list[Path]:
         d = self.install_dir()
@@ -126,6 +135,9 @@ def load(path: str | os.PathLike | None = None,
     studios = []
     for s in data.get("studios", []):
         fields = {k: v for k, v in s.items() if k in known}
+        # "Zero-Shot: Any Phrase" unquoted is a YAML mapping: turn it back into text.
+        fields["bullets"] = [b if isinstance(b, str) else "; ".join(f"{k}: {v}" for k, v in b.items())
+                             if isinstance(b, dict) else str(b) for b in fields.get("bullets", [])]
         fields.setdefault("dirs", [s["id"]])
         studios.append(Studio(install_root=root, **fields))
     return studios

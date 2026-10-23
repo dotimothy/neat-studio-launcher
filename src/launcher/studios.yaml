@@ -26,7 +26,9 @@ studios:
     launch: ./run.sh
     stop: ./run.sh stop
     update: ./run.sh update
-    processes: ["{dir}/src/python/ui/main.py", "{dir}/src/python/server/main.py"]
+    # The RAG worker starts milvus-lite from the venv; it holds src/python/ui/milvus.db's lock.
+    processes: ["{dir}/src/python/ui/main.py", "{dir}/src/python/server/main.py", "{dir}/src/python/rag/vectordb_worker.py",
+                're:{dir}/\.venv/lib/python[0-9.]+/site-packages/milvus_lite/lib/milvus']
     logs: []
     tagline: Chat, See, Listen and Speak. All On-Device.
     pitch: >-
@@ -151,10 +153,10 @@ studios:
       Zero-shot vision detection: open-vocabulary, with no fixed class list and
       no retraining. Ask for "the red mug
       left of the laptop" and Grounding DINO finds it, from a photo or a live
-      webcam, entirely on the Modalix MLA.
+      webcam, entirely on the Modalix MLA, with Base or the faster Tiny model.
     metric: { value: "0", label: "Retraining for New Objects" }
     bullets:
-      - Zero-Shot Detection: Any Phrase, No Fixed Class List
+      - "Zero-Shot Detection: Any Phrase, No Fixed Class List"
       - Voice Queries via Whisper + On-Device LLM (~0.5 s)
       - Pipelined Live Mode, ~27% More FPS
     media: { type: gif, hero: studio-detect.gif }
