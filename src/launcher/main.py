@@ -34,6 +34,23 @@ def ensure_cert() -> tuple[str, str] | None:
         return None
 
 
+def _lazy_handshake_context(crt, key):
+    """Werkzeug wraps the listening socket, so each TLS handshake runs inside
+    the single accept loop: one client that stalls mid-handshake (a phone going
+    to sleep, a port scanner) freezes the whole launcher. Deferring the
+    handshake moves it into that connection's own handler thread."""
+    import ssl as _ssl
+
+    class Ctx(_ssl.SSLContext):
+        def wrap_socket(self, sock, *a, **k):
+            k["do_handshake_on_connect"] = False
+            return super().wrap_socket(sock, *a, **k)
+
+    ctx = Ctx(_ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(crt, key)
+    return ctx
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Neat Studio Launcher")
     ap.add_argument("--host", default=os.environ.get("LAUNCHER_HOST", "0.0.0.0"))
@@ -46,7 +63,7 @@ def main() -> None:
     ssl = None if args.no_https else ensure_cert()
     scheme = "https" if ssl else "http"
     print(f"Neat Studio Launcher on {scheme}://{args.host}:{args.port}/", flush=True)
-    kw = {"ssl_context": ssl} if ssl else {}
+    kw = {"ssl_context": _lazy_handshake_context(*ssl)} if ssl else {}
     sio.run(app, host=args.host, port=args.port, allow_unsafe_werkzeug=True,
             use_reloader=False, log_output=False, **kw)
 
