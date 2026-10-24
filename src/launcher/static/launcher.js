@@ -631,12 +631,43 @@
       else if (e.target.closest(".lb-prev")) set(i - 1);
     });
     addEventListener("keydown", onKey);
+    onSwipe(back, (d) => set(i + d));
     document.body.appendChild(back);
     closeLightbox = close;
     set(i);
     back.querySelector(".lb-close").focus();
   }
   let closeLightbox = null;
+
+  // Horizontal swipe on touch screens: step(+1) for next, step(-1) for previous.
+  function onSwipe(el, step) {
+    let x0 = null, y0 = 0;
+    el.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) { x0 = null; return; }
+      x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
+    }, { passive: true });
+    el.addEventListener("touchend", (e) => {
+      if (x0 === null) return;
+      const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
+      x0 = null;
+      if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2) step(dx < 0 ? 1 : -1);
+    }, { passive: true });
+  }
+  // The studio page re-renders its gallery, so stage swipes are caught at the document.
+  (() => {
+    let x0 = null, y0 = 0, box = null;
+    document.addEventListener("touchstart", (e) => {
+      const st = e.touches.length === 1 && e.target.closest && e.target.closest(".g-stage");
+      box = st ? st.closest(".gallery") : null;
+      if (box) { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; }
+    }, { passive: true });
+    document.addEventListener("touchend", (e) => {
+      if (!box) return;
+      const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
+      if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2) showGallery(box, +box.dataset.index + (dx < 0 ? 1 : -1));
+      box = null;
+    }, { passive: true });
+  })();
 
   document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-g]");
@@ -1237,6 +1268,9 @@
   function selectConsole(key, scroll) {
     currentConsole = key;
     $$("#consoleTabs button").forEach((b) => b.classList.toggle("active", b.dataset.console === key));
+    const tab = $(`#consoleTabs button.active`);
+    if (tab) { const p = tab.parentElement, l = tab.getBoundingClientRect().left - p.getBoundingClientRect().left + p.scrollLeft;
+      if (p.scrollWidth > p.clientWidth) p.scrollTo({ left: l - 24, behavior: "smooth" }); }
     Object.values(consoles).forEach((c) => { c.host.style.display = "none"; });
     let c = consoles[key];
     if (!c) {
