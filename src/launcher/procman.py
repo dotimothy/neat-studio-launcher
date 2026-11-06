@@ -28,6 +28,45 @@ import psutil
 from registry import Studio
 import updates
 
+# -- MLA ----------------------------------------------------------------------
+LEGACY_MLA_SERVICE = "simaai-appcomplex.service"      # firmware before 3.0
+MLA_DEVICES = ("/dev/mla", "/dev/simaai-mlamem")
+
+
+def legacy_mla_service() -> bool:
+    """Is simaai-appcomplex.service installed (firmware before 3.0)?"""
+    try:
+        r = subprocess.run(["systemctl", "list-unit-files", LEGACY_MLA_SERVICE, "--no-legend"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return LEGACY_MLA_SERVICE in r.stdout
+
+
+def mla_users(devices: tuple[str, ...] = MLA_DEVICES, proc: Path = Path("/proc")) -> list[dict]:
+    """The programs that have the MLA open (the ones this user can see)."""
+    out = []
+    for d in proc.iterdir():
+        if not d.name.isdigit() or int(d.name) == os.getpid():
+            continue
+        try:
+            fds = os.listdir(d / "fd")
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(d / "fd" / fd)
+            except OSError:
+                continue
+            if target in devices:
+                try:
+                    cmd = (d / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+                except OSError:
+                    cmd = ""
+                out.append({"pid": int(d.name), "cmd": cmd})
+                break
+    return sorted(out, key=lambda u: u["pid"])
+
 BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
 
 
@@ -664,14 +703,46 @@ export STUDIO_BRANCH={qb}
         self.push()
 
     # -- system --------------------------------------------------------------
-    def reset_mla(self, service: str = "simaai-appcomplex.service") -> int:
-        cmd = ["sudo", "-n", "systemctl", "restart", service]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        msg = f"$ {' '.join(cmd)}\r\n{(r.stdout + r.stderr).replace(chr(10), chr(13) + chr(10))}"
-        self.system_log.append(msg + f"exit {r.returncode}\r\n")
-        if r.returncode != 0:
-            raise RuntimeError((r.stderr or r.stdout).strip() or f"exit {r.returncode}")
-        return r.returncode
+    def reset_mla(self, grace: float = 60.0) -> dict:
+        """Free every model on the MLA. Before 3.0 the models live in
+        simaai-appcomplex.service, which is restarted. From 3.0 that service is
+        gone and each program holds its own models, so the programs that have the
+        MLA open are stopped (SIGTERM, then SIGKILL after `grace` seconds: a
+        clean exit is what frees their MLA memory)."""
+        if legacy_mla_service():
+            cmd = ["sudo", "-n", "systemctl", "restart", LEGACY_MLA_SERVICE]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            msg = f"$ {' '.join(cmd)}\r\n{(r.stdout + r.stderr).replace(chr(10), chr(13) + chr(10))}"
+            self.system_log.append(msg + f"exit {r.returncode}\r\n")
+            if r.returncode != 0:
+                raise RuntimeError((r.stderr or r.stdout).strip() or f"exit {r.returncode}")
+            return {"method": "service", "stopped": []}
+        users = mla_users()
+        self.system_log.append(f"Reset MLA: {len(users)} program(s) have the MLA open\r\n")
+        procs, denied = [], []
+        for u in users:
+            try:
+                p = psutil.Process(u["pid"])
+                p.terminate()
+                procs.append(p)
+                self.system_log.append(f"  SIGTERM {u['pid']} {u['cmd'][:120]}\r\n")
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.AccessDenied:
+                denied.append(u)
+        _, alive = psutil.wait_procs(procs, timeout=grace)
+        for p in alive:
+            try:
+                p.kill()
+                self.system_log.append(f"  SIGKILL {p.pid} (still running after {grace:.0f} s)\r\n")
+            except psutil.NoSuchProcess:
+                pass
+        psutil.wait_procs(alive, timeout=5)
+        self.push()
+        if denied:
+            raise RuntimeError("not allowed to stop " + ", ".join(str(u["pid"]) for u in denied)
+                               + " (another user's program): stop it with sudo kill from the Shell tab")
+        return {"method": "stop", "stopped": [p.pid for p in procs]}
 
     # -- loop ----------------------------------------------------------------
     def push(self) -> None:

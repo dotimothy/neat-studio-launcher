@@ -181,14 +181,18 @@ def create_app(studios=None, logs_dir=None, start_monitor=True):
     def api_system():
         return jsonify({**info(), "version": VERSION})
 
+    @app.get("/api/system/mla")
+    def api_mla():
+        from procman import legacy_mla_service, mla_users
+        return jsonify({"legacy_service": legacy_mla_service(), "users": mla_users()})
+
     @app.post("/api/system/reset-mla")
     def api_reset_mla():
         try:
-            mgr.reset_mla()
+            r = mgr.reset_mla()
         except Exception as e:                                 # noqa: BLE001
-            return err(f"MLA reset failed: {e}. Run it from the Shell tab: "
-                       "sudo systemctl restart simaai-appcomplex.service", 500)
-        return jsonify({"ok": True})
+            return err(f"MLA reset failed: {e}", 500)
+        return jsonify({"ok": True, **r})
 
     @app.post("/api/launcher/update")
     def api_launcher_update():

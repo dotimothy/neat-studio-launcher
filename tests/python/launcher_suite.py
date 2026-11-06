@@ -202,6 +202,25 @@ class TerminalTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: exited, 5))
 
 
+class ShellSignalTests(unittest.TestCase):
+    def test_ctrl_c_works_although_the_launcher_ignores_sigint(self):
+        out: list[str] = []
+        old = signal.signal(signal.SIGINT, signal.SIG_IGN)      # as under nohup/&
+        try:
+            s = Session(out.append, lambda code: None, shell="/bin/sh")
+        finally:
+            signal.signal(signal.SIGINT, old)
+        try:
+            s.write("sleep 30; echo NOT-INTERRUPTED\n")
+            time.sleep(0.5)
+            s.write("\x03")                                     # Ctrl+C
+            s.write("echo after-$((1+1))\n")
+            self.assertTrue(wait_for(lambda: "after-2" in "".join(out), 10), "".join(out)[-300:])
+            self.assertNotIn("NOT-INTERRUPTED\r\n", "".join(out).replace("echo NOT-INTERRUPTED", ""))
+        finally:
+            s.close()
+
+
 class UpdateTests(unittest.TestCase):
     """Commit-hash update checks, with GitHub replaced by fixed answers."""
 
@@ -564,3 +583,63 @@ class SingleSignalTests(FakeBoard):
             self.mgr._signal("dino", signal.SIGTERM)
         hits = [x for x in sent if (x[0] == "group" and x[1] == self.mgr.rt["dino"].owned.pid) or (x[0] == "pid" and x[1] in pids)]
         self.assertEqual(len(hits), 1, sent)
+
+
+class ResetMlaTests(unittest.TestCase):
+    """3.0 firmware has no simaai-appcomplex.service: Reset MLA stops the programs
+    holding the MLA instead; older firmware still restarts the service."""
+
+    def _holder(self, dev, ignore_term=False):
+        import subprocess
+        code = ("import signal,sys,time\n"
+                + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+                + "f=open(sys.argv[1]); print('ready', flush=True); time.sleep(120)")
+        p = subprocess.Popen([__import__('sys').executable, "-c", code, str(dev)], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (p.poll() is None and p.kill(), p.wait()))
+        p.stdout.readline()
+        return p
+
+    def _stub(self):
+        from types import SimpleNamespace
+        log = []
+        return SimpleNamespace(system_log=SimpleNamespace(append=log.append), push=lambda: None), log
+
+    def test_finds_the_programs_holding_the_mla(self):
+        import procman
+        dev = Path(tempfile.mkdtemp()) / "mla"
+        dev.write_text("")
+        p = self._holder(dev)
+        users = procman.mla_users(devices=(str(dev),))
+        self.assertEqual([u["pid"] for u in users], [p.pid])
+        self.assertIn(str(dev), users[0]["cmd"])
+
+    def test_3_0_stops_them_and_kills_one_that_ignores_sigterm(self):
+        from unittest import mock
+        import procman
+        dev = Path(tempfile.mkdtemp()) / "mla"
+        dev.write_text("")
+        polite, stubborn = self._holder(dev), self._holder(dev, ignore_term=True)
+        stub, log = self._stub()
+        with mock.patch.object(procman, "legacy_mla_service", return_value=False), \
+             mock.patch.object(procman, "mla_users", return_value=[{"pid": polite.pid, "cmd": "polite"}, {"pid": stubborn.pid, "cmd": "stubborn"}]):
+            r = procman.Manager.reset_mla(stub, grace=1.0)
+        self.assertEqual(r["method"], "stop")
+        self.assertEqual(sorted(r["stopped"]), sorted([polite.pid, stubborn.pid]))
+        import psutil
+        for p in (polite, stubborn):              # reset_mla reaps them itself
+            self.assertFalse(psutil.pid_exists(p.pid) and psutil.Process(p.pid).status() != psutil.STATUS_ZOMBIE)
+        killed = [line for line in log if "SIGKILL" in line]
+        self.assertEqual(len(killed), 1)
+        self.assertIn(str(stubborn.pid), killed[0])  # only the one that ignored SIGTERM
+
+    def test_older_firmware_restarts_appcomplex(self):
+        from unittest import mock
+        import subprocess
+        import procman
+        stub, _ = self._stub()
+        done = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(procman, "legacy_mla_service", return_value=True), \
+             mock.patch.object(procman.subprocess, "run", return_value=done) as run:
+            r = procman.Manager.reset_mla(stub)
+        self.assertEqual(r["method"], "service")
+        self.assertEqual(run.call_args[0][0], ["sudo", "-n", "systemctl", "restart", "simaai-appcomplex.service"])
