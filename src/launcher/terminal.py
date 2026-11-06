@@ -28,6 +28,13 @@ class Session:
                 os.chdir(cwd or os.path.expanduser("~"))
             except OSError:
                 pass
+            # The launcher runs in the background (nohup, &), so it ignores SIGINT,
+            # SIGQUIT and SIGHUP, and Python ignores SIGPIPE. A shell would pass that
+            # on to every command, and Ctrl+C would stop nothing: restore the defaults.
+            for sig in ("SIGINT", "SIGQUIT", "SIGHUP", "SIGPIPE", "SIGXFSZ", "SIGTERM",
+                        "SIGTSTP", "SIGTTIN", "SIGTTOU"):
+                if hasattr(signal, sig):
+                    signal.signal(getattr(signal, sig), signal.SIG_DFL)
             env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor")
             env.pop("NEAT_LAUNCHER_CONFIG", None)
             os.execvpe(shell, [shell, "-l"], env)

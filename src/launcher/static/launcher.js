@@ -245,11 +245,54 @@
     brightBlack: "#727d8b", brightRed: "#ff7b82", brightGreen: "#4fe0a3", brightYellow: "#f2c66d",
     brightBlue: "#69a7ff", brightMagenta: "#d99cf0", brightCyan: "#5ff0dd", brightWhite: "#ffffff",
   };
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+    } catch (e) { /* fall back below */ }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+  function termText(term) {
+    if (term.hasSelection()) return term.getSelection();
+    const b = term.buffer.active, lines = [];
+    for (let i = 0; i < b.length; i++) { const l = b.getLine(i); lines.push(l ? l.translateToString(true) : ""); }
+    while (lines.length && !lines[lines.length - 1]) lines.pop();
+    return lines.join("\n");
+  }
+  async function copyTerm(term, what) {
+    const sel = term.hasSelection();
+    const text = termText(term);
+    if (!text) { toast(`Nothing to Copy Yet`, "info"); return; }
+    const n = text.split("\n").length;
+    if (await copyText(text)) toast(sel ? `Copied the Selection (${plural(n, "line")})` : `Copied ${what || "the Log"} (${plural(n, "line")})`, "ok");
+    else toast("Copy Failed: select the text and press Ctrl+C", "err");
+  }
   function makeTerm(host, opts) {
     const term = new window.Terminal(Object.assign({
       fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: 12.5, lineHeight: 1.2,
       theme: XTERM_THEME, scrollback: 8000, convertEol: false, cursorBlink: false, allowProposedApi: true,
     }, opts || {}));
+    const readOnly = !!(opts && opts.disableStdin);
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== "keydown") return true;
+      const mod = ev.ctrlKey || ev.metaKey, k = (ev.key || "").toLowerCase();
+      if (mod && k === "c" && (term.hasSelection() || ev.shiftKey || readOnly)) {
+        ev.preventDefault();
+        if (term.hasSelection()) copyText(term.getSelection());
+        return false;
+      }
+      if (mod && k === "a" && readOnly) { ev.preventDefault(); term.selectAll(); return false; }
+      if (mod && k === "v" && !readOnly) return false;     // the browser pastes; xterm sends it
+      return true;
+    });
     const fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -965,9 +1008,10 @@
       view.innerHTML = `${toolbar}
         <div class="studio-split">
           <iframe class="studio-frame" id="studioFrame" title="${esc(st.name)}" allow="camera; microphone; clipboard-read; clipboard-write; fullscreen; autoplay" allowfullscreen></iframe>
-          <div class="drawer" id="logDrawer"><div class="drawer-head"><span>${icon("terminal")} ${esc(st.name)} log</span><button class="btn sm ghost" id="drawerClose">${icon("x")}</button></div><div class="xterm-host" id="drawerHost"></div></div>
+          <div class="drawer" id="logDrawer"><div class="drawer-head"><span>${icon("terminal")} ${esc(st.name)} log</span><span class="btn-row"><button class="btn sm ghost" id="drawerCopy" title="Copy the selection, or the whole log (Ctrl+C copies a selection)">${icon("copy")}Copy</button><button class="btn sm ghost" id="drawerClose">${icon("x")}</button></span></div><div class="xterm-host" id="drawerHost"></div></div>
         </div>`;
       $("#drawerClose").onclick = () => toggleDrawer(false);
+      $("#drawerCopy").onclick = () => studioPage.log && copyTerm(studioPage.log.term);
       loadFrame(st);
     } else if (mode === "boot") {
       view.innerHTML = `${toolbar}
@@ -997,10 +1041,11 @@
             </dl>
           </div>
         </div>
-        <div class="section" style="padding-top:0"><div class="section-head"><h3>Live Activity</h3><span class="btn-row"><a class="btn sm" href="/api/studios/${id}/log">${icon("download")}Download Log</a></span></div>
+        <div class="section" style="padding-top:0"><div class="section-head"><h3>Live Activity</h3><span class="btn-row"><button class="btn sm" id="detailLogCopy" title="Copy the selection, or the whole log (Ctrl+C copies a selection)">${icon("copy")}Copy</button><a class="btn sm" href="/api/studios/${id}/log">${icon("download")}Download Log</a></span></div>
           <div class="log-box" id="detailLog"></div></div>
         </div>`;
       studioPage.log = attachLog(id, $("#detailLog"));
+      $("#detailLogCopy").onclick = () => studioPage.log && copyTerm(studioPage.log.term);
       watchGifs(view);
     }
     updateStudioPage(st);
@@ -1303,13 +1348,15 @@
     const actions = $("#consoleActions");
     if (key === "shell") {
       $("#consoleLabel").textContent = `Shell · ${state.system ? state.system.hostname : "Board"} (Runs as the Launcher's User)`;
-      actions.innerHTML = `<button class="btn sm" id="shellRestart">${icon("refresh")}Restart</button>`;
+      actions.innerHTML = `<button class="btn sm" id="shellCopy" title="Copy the selection, or everything on screen (Ctrl+Shift+C copies, Ctrl+V pastes)">${icon("copy")}Copy</button><button class="btn sm" id="shellRestart">${icon("refresh")}Restart</button>`;
       $("#shellRestart").onclick = () => openShell(consoles.shell);
+      $("#shellCopy").onclick = () => copyTerm(c.term, "the Shell");
     } else {
       const id = key.slice(4);
       $("#consoleLabel").textContent = `${state.studios[id].name} · Live Log`;
-      actions.innerHTML = `<a class="btn sm" href="/api/studios/${id}/log">${icon("download")}Download</a><button class="btn sm" id="logClear">${icon("trash")}Clear</button>`;
+      actions.innerHTML = `<button class="btn sm" id="logCopy" title="Copy the selection, or the whole log (Ctrl+C copies a selection)">${icon("copy")}Copy</button><a class="btn sm" href="/api/studios/${id}/log">${icon("download")}Download</a><button class="btn sm" id="logClear">${icon("trash")}Clear</button>`;
       $("#logClear").onclick = async () => { await api(`/api/studios/${id}/log/clear`, { method: "POST" }); c.term.reset(); };
+      $("#logCopy").onclick = () => copyTerm(c.term);
     }
     $$("svg", actions).forEach((s) => { s.setAttribute("width", 14); s.setAttribute("height", 14); });
     if (scroll) $("#consoleTabs").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1355,15 +1402,30 @@
   $("#checkUpdatesBtn").addEventListener("click", () => checkUpdates(true));
   $("#checkUpdatesBtn2").addEventListener("click", () => checkUpdates(true));
   $("#resetMlaBtn").addEventListener("click", async () => {
-    const r = running();
+    let m;
+    try { m = await api("/api/system/mla"); } catch (e) { toast(e.message, "err"); return; }
+    let body;
+    if (m.legacy_service) {
+      body = `<p>Restarts <span class="mono">simaai-appcomplex.service</span>, which releases every model loaded on the MLA (for every program on the board, not only the studios).</p>`;
+    } else if (!m.users.length) {
+      await modal({ title: "The MLA Is Free", body: "<p>No program has the MLA open, so there is nothing to reset.</p>",
+        actions: [{ label: "OK", value: true, cls: "solid" }] });
+      return;
+    } else {
+      body = `<p>Each program holds its own models on the MLA, and they are freed when it exits. This stops ${plural(m.users.length, "program")} that ${m.users.length === 1 ? "has" : "have"} the MLA open, including any not started from here:</p>
+        <ul class="mono" style="font-size:12px;max-height:180px;overflow:auto;padding-left:18px">${m.users.map((u) => `<li><b>${u.pid}</b> ${esc(u.cmd.length > 110 ? u.cmd.slice(0, 110) + "…" : u.cmd)}</li>`).join("")}</ul>
+        <p class="muted">Each gets up to a minute to exit cleanly, then it is killed.</p>`;
+    }
     const ok = await modal({
-      title: "Reset the MLA?",
-      body: `<p>Restarts <span class="mono">simaai-appcomplex.service</span>, which releases every model loaded on the MLA.${r.length ? " Running studios will lose their models: stop them first." : ""}</p>`,
-      actions: [{ label: "Cancel", value: false, cls: "ghost" }, { label: "Reset MLA", value: true, cls: "danger solid" }],
+      title: "Reset the MLA?", body,
+      actions: [{ label: "Cancel", value: false, cls: "ghost" }, { label: m.legacy_service ? "Reset MLA" : "Stop and Reset", value: true, cls: "danger solid" }],
     });
     if (!ok) return;
-    try { await api("/api/system/reset-mla", { method: "POST" }); toast("MLA reset", "ok"); }
-    catch (e) { toast(e.message, "err"); }
+    if (!m.legacy_service) toast(`Stopping ${plural(m.users.length, "program")} on the MLA…`, "info");
+    try {
+      const r = await api("/api/system/reset-mla", { method: "POST" });
+      toast(r.method === "stop" ? `MLA Reset: Stopped ${plural(r.stopped.length, "program")}` : "MLA Reset", "ok");
+    } catch (e) { toast(e.message, "err"); }
   });
 
   function renderAll() {
